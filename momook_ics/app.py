@@ -33,13 +33,14 @@ async def lifespan(app: FastAPI):
         )
     builder = FeedBuilder(settings)
     log.info(
-        "Serving %s → /calendar/%s.ics (window: -%dd/+%dd, cache %ds)",
+        "Serving %s → /calendar/%s.ics (window: -%dd/+%dd, refresh %ds)",
         settings.base_url,
         "*" * 8,
         settings.days_past,
         settings.days_future,
         settings.cache_ttl,
     )
+    builder.start_background_refresh()
     try:
         yield
     finally:

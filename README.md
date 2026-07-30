@@ -82,7 +82,8 @@ Every setting is an environment variable prefixed with `MOMOOK_`; see
 | `FEED_TOKEN` | — | secret path segment of the feed URL |
 | `TIMEZONE` | `Europe/Paris` | applied to timestamps returned without an offset |
 | `DAYS_PAST` / `DAYS_FUTURE` | 30 / 180 | feed window |
-| `CACHE_TTL` | 300 | seconds before querying MOMook again |
+| `CACHE_TTL` | 300 | seconds between background refreshes |
+| `HTTP_TIMEOUT` | 120 | MOMook is slow; refreshes run off the request path |
 | `ONLY_MY_EVENTS` | `true` | keep only sessions you are enrolled in |
 | `HIDE_CANCELLED` | `false` | drop cancellations instead of striking them through |
 | `CALENDAR_NAME` | `Momook` | name shown in the calendar app |

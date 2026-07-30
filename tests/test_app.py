@@ -23,6 +23,9 @@ class FakeBuilder:
     def get(self, *, force: bool = False) -> bytes:
         return b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
 
+    def start_background_refresh(self) -> None:
+        pass
+
     def close(self) -> None:
         pass
 

@@ -29,8 +29,13 @@ class Settings(BaseSettings):
     days_past: int = 30
     days_future: int = 180
 
-    # Seconds a fetched schedule is reused before hitting Momook again.
+    # Seconds between background refreshes of the cached calendar.
     cache_ttl: int = 300
+
+    # Momook's /api/schedule is slow — tens of seconds for a wide window with
+    # every relation attached. Refreshes happen off the request path, so a
+    # generous timeout costs subscribers nothing.
+    http_timeout: float = 120.0
 
     # Shared secret in the feed URL. Anyone holding it can read your schedule.
     feed_token: str = ""
