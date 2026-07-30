@@ -103,7 +103,9 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
     participants = _participants(row)
     comment = str(_first(row, "Comment", "comment", "Description", "Note") or "").strip()
 
-    summary = _summary(event_type, topic, training, resource)
+    # A session can carry a hand-written title; it wins over the derived one.
+    override = str(_first(row, "TitleOverride") or "").strip()
+    summary = override or _summary(event_type, topic, training, resource)
     if time_status == "cancelled":
         summary = f"ANNULÉ — {summary}"
 
@@ -234,17 +236,25 @@ def _role(raw: object) -> str:
 
 
 def _involves_user(row: dict, user_id: int) -> bool:
-    for link in _rel(row, "ScheduleEventUser"):
-        candidate = link.get("UserId")
-        if candidate is None:
-            user = link.get("User") or link.get("CoreUser") or {}
-            candidate = user.get("Id") if isinstance(user, dict) else None
-        if _as_int(candidate) == user_id:
-            return True
-    for link in _rel(row, "ScheduleEventAttendee"):
-        if _as_int(link.get("UserId")) == user_id:
-            return True
-    return False
+    """Whether ``user_id`` is a participant of ``row``.
+
+    The API is already filtered server-side on the user, and often returns the
+    participant relations empty. So an absence of participant data means "yes,
+    the server matched it" — only an explicit list of other people excludes it.
+    """
+    saw_any = False
+    for rel_name in ("ScheduleEventUser", "ScheduleEventAttendee"):
+        for link in _rel(row, rel_name):
+            candidate = link.get("UserId")
+            if candidate is None:
+                user = link.get("User") or link.get("CoreUser") or {}
+                candidate = user.get("Id") if isinstance(user, dict) else None
+            if candidate is None:
+                continue
+            saw_any = True
+            if _as_int(candidate) == user_id:
+                return True
+    return not saw_any
 
 
 def _rel(row: dict, name: str) -> list[dict]:
