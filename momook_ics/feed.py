@@ -13,12 +13,16 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .client import Credentials, MomookClient
+from .client import Credentials, MomookClient, MomookError
 from .config import Settings
 from .ical import build_calendar
 from .model import Event, parse_events
 
 log = logging.getLogger(__name__)
+
+# Bounds on the adaptive slice splitting in _fetch_slice.
+MIN_SLICE_DAYS = 3
+MAX_SLICE_DEPTH = 3
 
 
 class FeedBuilder:
@@ -78,13 +82,7 @@ class FeedBuilder:
         by_id: dict[object, dict] = {}
         anonymous: list[dict] = []
         for chunk_start, chunk_end in _slices(start, end, self._settings.chunk_days):
-            rows = self._client.fetch_events(chunk_start, chunk_end, user_id=user_id)
-            log.info(
-                "%s → %s: %d rows",
-                chunk_start.date(),
-                chunk_end.date(),
-                len(rows),
-            )
+            rows = self._fetch_slice(user_id, chunk_start, chunk_end)
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -97,6 +95,34 @@ class FeedBuilder:
         merged = list(by_id.values()) + anonymous
         log.info("Fetched %d distinct schedule rows for user %s", len(merged), user_id)
         return merged
+
+    def _fetch_slice(
+        self, user_id: int, start: datetime, end: datetime, depth: int = 0
+    ) -> list[dict]:
+        """One slice, halved and retried when Momook gives up on it.
+
+        Cost grows with the number of matching events, not just the span, so a
+        slice that times out for a busy stretch of the year is split rather
+        than failing the whole refresh.
+        """
+        try:
+            rows = self._client.fetch_events(start, end, user_id=user_id)
+        except MomookError as exc:
+            span_days = (end - start).total_seconds() / 86400
+            if depth >= MAX_SLICE_DEPTH or span_days <= MIN_SLICE_DAYS:
+                raise
+            log.warning(
+                "%s → %s failed (%s); splitting in two",
+                start.date(),
+                end.date(),
+                exc,
+            )
+            middle = start + (end - start) / 2
+            return self._fetch_slice(user_id, start, middle, depth + 1) + self._fetch_slice(
+                user_id, middle, end, depth + 1
+            )
+        log.info("%s → %s: %d rows", start.date(), end.date(), len(rows))
+        return rows
 
     def fetch_events(self) -> list[Event]:
         rows = self.fetch_rows()

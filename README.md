@@ -81,9 +81,9 @@ Every setting is an environment variable prefixed with `MOMOOK_`; see
 | `TOTP_SECRET` | — | base32 2FA secret, if enabled |
 | `FEED_TOKEN` | — | secret path segment of the feed URL |
 | `TIMEZONE` | `Europe/Paris` | applied to timestamps returned without an offset |
-| `DAYS_PAST` / `DAYS_FUTURE` | 14 / 120 | feed window |
-| `CHUNK_DAYS` | 45 | window is fetched in slices; MOMook 504s on wide queries |
-| `CACHE_TTL` | 900 | seconds between background refreshes |
+| `DAYS_PAST` / `DAYS_FUTURE` | 7 / 90 | feed window |
+| `CHUNK_DAYS` | 21 | window is fetched in slices; MOMook 504s on wide queries |
+| `CACHE_TTL` | 1800 | seconds between background refreshes |
 | `HTTP_TIMEOUT` | 120 | MOMook is slow; refreshes run off the request path |
 | `ONLY_MY_EVENTS` | `true` | keep only sessions you are enrolled in |
 | `HIDE_CANCELLED` | `false` | drop cancellations instead of striking them through |
