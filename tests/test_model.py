@@ -86,7 +86,6 @@ def main() -> None:
     # Title is the subject alone; the room lives in LOCATION, not in the title.
     assert lesson.summary == "Meteorology", lesson.summary
     assert lesson.location == "Salle B12"
-    assert "Salle B12" not in lesson.summary
     assert "100001" not in lesson.description, lesson.description
     assert "Instructeur(s) : Jean Dupont" in lesson.description, lesson.description
     assert "Groupe : ATPL-2026-A" in lesson.description
@@ -96,7 +95,7 @@ def main() -> None:
 
     sim = by_uid["momook-100002"]
     assert sim.cancelled
-    assert sim.summary == "ANNULÉ — Simulateur", sim.summary
+    assert sim.summary == "Simulateur", sim.summary  # the marker is the renderer's job
     assert sim.location == "FNPT II #1"
 
     ics = build_calendar(events, name="Momook", timezone_name="Europe/Paris").decode("utf-8")
@@ -104,6 +103,7 @@ def main() -> None:
     assert ics.count("BEGIN:VEVENT") == 3
     assert "UID:momook-100001@momook-ics" in ics
     assert "STATUS:CANCELLED" in ics
+    assert "SUMMARY:ANNULÉ — Simulateur" in ics, _grep(ics, "SUMMARY")
     assert "X-PUBLISHED-TTL:PT15M" in ics
     assert "DTSTART;TZID=Europe/Paris:20260914T083000" in ics, _grep(ics, "DTSTART")
 

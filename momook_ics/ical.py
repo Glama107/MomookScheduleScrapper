@@ -43,7 +43,8 @@ def _to_vevent(event: Event, now: datetime) -> VEvent:
     vevent.add("dtstamp", now)
     vevent.add("dtstart", event.start)
     vevent.add("dtend", event.end)
-    vevent.add("summary", event.summary)
+    # Many clients do not surface STATUS:CANCELLED, so say it in the title too.
+    vevent.add("summary", f"ANNULÉ — {event.summary}" if event.cancelled else event.summary)
     if event.description:
         vevent.add("description", event.description)
     if event.location:

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from dateutil import parser as date_parser
 
-from ._shape import as_int as _as_int, first as _first
+from ._shape import first as _first
 
 # Event types, as defined in the front-end's scheduleEventType enum.
 EVENT_TYPE_LABELS = {
@@ -50,6 +50,11 @@ TIME_STATUS_LABELS = {
     "paused": "En pause",
     "cancelled": "Annulé",
 }
+
+
+def type_label(event_type: str) -> str:
+    """Human label for an event type, however unfamiliar it is."""
+    return EVENT_TYPE_LABELS.get(event_type) or event_type.replace("_", " ").title() or "Session"
 
 
 @dataclass
@@ -106,10 +111,10 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
     comment = str(_first(row, "Comment", "comment", "Description", "Note") or "").strip()
 
     # A session can carry a hand-written title; it wins over the derived one.
+    # Subject only: the room goes in LOCATION and the kind of session in
+    # CATEGORIES, so repeating either here only crowds the day view.
     override = str(_first(row, "TitleOverride") or "").strip()
-    summary = override or _summary(event_type, topic, training)
-    if time_status == "cancelled":
-        summary = f"ANNULÉ — {summary}"
+    summary = override or topic or training or type_label(event_type)
 
     labelled = [
         ("Formation", training if training != topic else ""),
@@ -120,9 +125,8 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
         ("Note", comment),
         ("Statut", TIME_STATUS_LABELS.get(time_status, "")),
     ]
-    description_lines = [f"{label} : {value}" for label, value in labelled if value]
 
-    categories = [EVENT_TYPE_LABELS.get(event_type, event_type)] if event_type else []
+    categories = [type_label(event_type)] if event_type else []
 
     return Event(
         # The fallback uid must not depend on anything rendered: a status change
@@ -133,7 +137,7 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
         start=start,
         end=end,
         summary=summary,
-        description="\n".join(description_lines),
+        description="\n".join(f"{label} : {value}" for label, value in labelled if value),
         location=resource,
         cancelled=time_status == "cancelled",
         last_modified=_parse_datetime(_first(row, "ModifiedAt", "modified_at"), tz),
@@ -142,15 +146,6 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
 
 
 # -- field extraction ------------------------------------------------------
-
-
-def _summary(event_type: str, topic: str, training: str) -> str:
-    """Just the subject. The room goes in LOCATION and the kind of session in
-    CATEGORIES, so repeating either in the title only crowds the day view."""
-    subject = topic or training
-    if subject:
-        return subject
-    return EVENT_TYPE_LABELS.get(event_type, event_type.replace("_", " ").title() or "Session")
 
 
 def _linked_title(row: dict, rel_name: str, entity_key: str) -> str:

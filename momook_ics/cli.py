@@ -83,7 +83,8 @@ def _dispatch(args: argparse.Namespace, settings) -> int:
         if args.command == "events":
             events = builder.fetch_events()
             for event in events:
-                print(f"{event.start:%a %d %b %Y %H:%M}–{event.end:%H:%M}  {event.summary}")
+                mark = "ANNULÉ — " if event.cancelled else ""
+                print(f"{event.start:%a %d %b %Y %H:%M}–{event.end:%H:%M}  {mark}{event.summary}")
                 if event.location:
                     print(f"    @ {event.location}")
             print(f"\n{len(events)} events", file=sys.stderr)
