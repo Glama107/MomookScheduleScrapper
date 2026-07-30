@@ -107,7 +107,7 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
 
     # A session can carry a hand-written title; it wins over the derived one.
     override = str(_first(row, "TitleOverride") or "").strip()
-    summary = override or _summary(event_type, topic, training, resource)
+    summary = override or _summary(event_type, topic, training)
     if time_status == "cancelled":
         summary = f"ANNULÉ — {summary}"
 
@@ -117,13 +117,10 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
         ("Groupe", group),
         ("Instructeur(s)", ", ".join(p.name for p in participants if p.role == "instructor")),
         ("Participants", ", ".join(p.name for p in participants if p.role != "instructor")),
-        ("Ressource", resource),
         ("Note", comment),
         ("Statut", TIME_STATUS_LABELS.get(time_status, "")),
     ]
     description_lines = [f"{label} : {value}" for label, value in labelled if value]
-    if identifier is not None:
-        description_lines.append(f"Momook #{identifier}")
 
     categories = [EVENT_TYPE_LABELS.get(event_type, event_type)] if event_type else []
 
@@ -147,16 +144,13 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
 # -- field extraction ------------------------------------------------------
 
 
-def _summary(event_type: str, topic: str, training: str, resource: str) -> str:
-    type_label = EVENT_TYPE_LABELS.get(event_type, event_type.replace("_", " ").title() or "Session")
+def _summary(event_type: str, topic: str, training: str) -> str:
+    """Just the subject. The room goes in LOCATION and the kind of session in
+    CATEGORIES, so repeating either in the title only crowds the day view."""
     subject = topic or training
-    if subject and resource:
-        return f"{subject} ({type_label}) — {resource}"
     if subject:
-        return f"{subject} ({type_label})"
-    if resource:
-        return f"{type_label} — {resource}"
-    return type_label
+        return subject
+    return EVENT_TYPE_LABELS.get(event_type, event_type.replace("_", " ").title() or "Session")
 
 
 def _linked_title(row: dict, rel_name: str, entity_key: str) -> str:

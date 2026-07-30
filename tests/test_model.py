@@ -83,8 +83,11 @@ def main() -> None:
 
     by_uid = {e.uid: e for e in events}
     lesson = by_uid["momook-100001"]
-    assert lesson.summary == "Meteorology (Cours) — Salle B12", lesson.summary
+    # Title is the subject alone; the room lives in LOCATION, not in the title.
+    assert lesson.summary == "Meteorology", lesson.summary
     assert lesson.location == "Salle B12"
+    assert "Salle B12" not in lesson.summary
+    assert "100001" not in lesson.description, lesson.description
     assert "Instructeur(s) : Jean Dupont" in lesson.description, lesson.description
     assert "Groupe : ATPL-2026-A" in lesson.description
     assert lesson.start.hour == 8 and lesson.start.minute == 30
@@ -93,7 +96,7 @@ def main() -> None:
 
     sim = by_uid["momook-100002"]
     assert sim.cancelled
-    assert sim.summary.startswith("ANNULÉ — "), sim.summary
+    assert sim.summary == "ANNULÉ — Simulateur", sim.summary
     assert sim.location == "FNPT II #1"
 
     ics = build_calendar(events, name="Momook", timezone_name="Europe/Paris").decode("utf-8")
