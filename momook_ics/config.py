@@ -26,11 +26,17 @@ class Settings(BaseSettings):
     timezone: str = "Europe/Paris"
 
     # How far back / forward the feed reaches, in days.
-    days_past: int = 30
-    days_future: int = 180
+    days_past: int = 14
+    days_future: int = 120
 
-    # Seconds between background refreshes of the cached calendar.
-    cache_ttl: int = 300
+    # Momook's gateway returns 504 on a query spanning several months, so the
+    # window is fetched in slices of at most this many days.
+    chunk_days: int = 45
+
+    # Seconds between background refreshes of the cached calendar. A full
+    # refresh is several slow queries, so keep this well above a minute — a
+    # calendar client polls hourly at best anyway.
+    cache_ttl: int = 900
 
     # Momook's /api/schedule is slow — tens of seconds for a wide window with
     # every relation attached. Refreshes happen off the request path, so a

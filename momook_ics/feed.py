@@ -65,11 +65,42 @@ class FeedBuilder:
             now + timedelta(days=self._settings.days_future),
         )
 
-    def fetch_events(self) -> list[Event]:
+    def fetch_rows(self) -> list[dict]:
+        """Raw schedule rows for the whole window, fetched in slices.
+
+        Momook's gateway returns 504 on a query spanning several months, so the
+        window is walked in chunks. Slices overlap on events that straddle a
+        boundary, hence the dedupe by event id.
+        """
         start, end = self.window()
         user_id = self._client.user_id()
-        rows = self._client.fetch_events(start, end, user_id=user_id)
-        log.info("Fetched %d raw schedule rows for user %s", len(rows), user_id)
+
+        by_id: dict[object, dict] = {}
+        anonymous: list[dict] = []
+        for chunk_start, chunk_end in _slices(start, end, self._settings.chunk_days):
+            rows = self._client.fetch_events(chunk_start, chunk_end, user_id=user_id)
+            log.info(
+                "%s → %s: %d rows",
+                chunk_start.date(),
+                chunk_end.date(),
+                len(rows),
+            )
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                key = row.get("Id", row.get("id"))
+                if key is None:
+                    anonymous.append(row)
+                else:
+                    by_id[key] = row
+
+        merged = list(by_id.values()) + anonymous
+        log.info("Fetched %d distinct schedule rows for user %s", len(merged), user_id)
+        return merged
+
+    def fetch_events(self) -> list[Event]:
+        rows = self.fetch_rows()
+        user_id = self._client.user_id()
         events = parse_events(
             rows,
             self._tz,
@@ -146,3 +177,16 @@ class FeedBuilder:
                     self._last_error = f"{type(exc).__name__}: {exc}"
                 log.warning("Background refresh failed: %s", exc)
             self._stop.wait(self._settings.cache_ttl)
+
+
+def _slices(start: datetime, end: datetime, days: int) -> list[tuple[datetime, datetime]]:
+    """Split ``[start, end]`` into consecutive windows of at most ``days``."""
+    if days <= 0:
+        return [(start, end)]
+    out: list[tuple[datetime, datetime]] = []
+    cursor = start
+    step = timedelta(days=days)
+    while cursor < end:
+        out.append((cursor, min(cursor + step, end)))
+        cursor += step
+    return out or [(start, end)]

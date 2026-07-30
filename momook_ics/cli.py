@@ -78,8 +78,7 @@ def _dispatch(args: argparse.Namespace, settings) -> int:
     try:
         if args.command == "dump":
             start, end = builder.window()
-            client = builder._client  # noqa: SLF001 - deliberate debugging hook
-            rows = client.fetch_events(start, end)
+            rows = builder.fetch_rows()
             if args.limit:
                 rows = rows[: args.limit]
             text = json.dumps(rows, indent=2, ensure_ascii=False)
