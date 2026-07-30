@@ -17,10 +17,10 @@ from momook_ics import app as app_module  # noqa: E402
 
 
 class FakeBuilder:
-    cached_at = 0.0
+    cache_age_seconds = None
     last_error = None
 
-    def get(self, *, force: bool = False) -> bytes:
+    def get(self) -> bytes:
         return b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
 
     def start_background_refresh(self) -> None:

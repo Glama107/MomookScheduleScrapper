@@ -63,7 +63,8 @@ SAMPLE_ROWS = [
         ],
     },
     {
-        # Someone else's session: must be filtered out when only_user_id is set.
+        # Another person's session. The model parses it like any other row —
+        # restricting the feed to one user is the query's job, not the parser's.
         "Id": 100003,
         "Start": "2026-09-15T09:00:00+02:00",
         "End": "2026-09-15T10:00:00+02:00",
@@ -76,10 +77,12 @@ SAMPLE_ROWS = [
 
 
 def main() -> None:
-    events = parse_events(SAMPLE_ROWS, TZ, only_user_id=ME)
-    assert len(events) == 2, f"expected 2 of my events, got {len(events)}"
+    events = parse_events(SAMPLE_ROWS, TZ)
+    assert len(events) == 3, f"expected every row parsed, got {len(events)}"
+    assert [e.start for e in events] == sorted(e.start for e in events), "not sorted by start"
 
-    lesson = events[0]
+    by_uid = {e.uid: e for e in events}
+    lesson = by_uid["momook-100001"]
     assert lesson.summary == "Meteorology (Cours) — Salle B12", lesson.summary
     assert lesson.location == "Salle B12"
     assert "Instructeur(s) : Jean Dupont" in lesson.description, lesson.description
@@ -88,17 +91,14 @@ def main() -> None:
     assert lesson.start.tzinfo is not None
     assert not lesson.cancelled
 
-    sim = events[1]
+    sim = by_uid["momook-100002"]
     assert sim.cancelled
     assert sim.summary.startswith("ANNULÉ — "), sim.summary
     assert sim.location == "FNPT II #1"
 
-    unfiltered = parse_events(SAMPLE_ROWS, TZ, only_user_id=None)
-    assert len(unfiltered) == 3
-
     ics = build_calendar(events, name="Momook", timezone_name="Europe/Paris").decode("utf-8")
     assert "BEGIN:VCALENDAR" in ics and ics.rstrip().endswith("END:VCALENDAR")
-    assert ics.count("BEGIN:VEVENT") == 2
+    assert ics.count("BEGIN:VEVENT") == 3
     assert "UID:momook-100001@momook-ics" in ics
     assert "STATUS:CANCELLED" in ics
     assert "X-PUBLISHED-TTL:PT15M" in ics
@@ -106,8 +106,12 @@ def main() -> None:
 
     # The parser must survive a payload it has never seen.
     junk = [{}, {"Id": 1}, {"Id": 2, "Start": "nonsense"}, {"Start": "2026-01-01 00:00:00"}]
-    survivors = parse_events(junk, TZ, only_user_id=None)
+    survivors = parse_events(junk, TZ)
     assert len(survivors) == 1, survivors
+
+    # A row without an Id still gets a uid, and it must not move when the
+    # rendered summary changes.
+    assert survivors[0].uid.startswith("momook-"), survivors[0].uid
 
     print(f"ok — {len(events)} events, {len(ics.splitlines())} ICS lines")
 

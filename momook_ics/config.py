@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from functools import lru_cache
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,20 +73,23 @@ class Settings(BaseSettings):
         return value.replace(" ", "").upper()
 
     def require_credentials(self) -> None:
-        missing = [
-            name
-            for name, value in (("MOMOOK_USERNAME", self.username), ("MOMOOK_PASSWORD", self.password))
-            if not value
-        ]
+        """What any entry point needs to talk to Momook at all."""
+        self._require(MOMOOK_USERNAME=self.username, MOMOOK_PASSWORD=self.password)
+
+    def require_serving(self) -> None:
+        """What the HTTP feed additionally needs. The token is the only thing
+        protecting your schedule at a public URL; generate one with
+        ``openssl rand -hex 24``."""
+        self.require_credentials()
+        self._require(MOMOOK_FEED_TOKEN=self.feed_token)
+
+    @staticmethod
+    def _require(**values: str) -> None:
+        missing = sorted(name for name, value in values.items() if not value)
         if missing:
             raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
 
-_settings: Settings | None = None
-
-
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    global _settings
-    if _settings is None:
-        _settings = Settings()
-    return _settings
+    return Settings()

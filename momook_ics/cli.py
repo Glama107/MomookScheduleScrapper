@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import sys
 
-from .client import Credentials, MomookClient, MomookError
+from .app import configure_logging
+from .client import MomookClient, MomookError
 from .config import get_settings
 from .feed import FeedBuilder
 
@@ -38,10 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the HTTP feed")
 
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)-8s %(name)s: %(message)s",
-    )
+    configure_logging(args.verbose)
 
     settings = get_settings()
     try:
@@ -65,10 +62,7 @@ def _dispatch(args: argparse.Namespace, settings) -> int:
         return 0
 
     if args.command == "whoami":
-        with MomookClient(
-            settings.base_url,
-            Credentials(settings.username, settings.password, settings.totp_secret),
-        ) as client:
+        with MomookClient.from_settings(settings) as client:
             identity = client.identity()
             print(json.dumps(identity, indent=2, ensure_ascii=False))
             print(f"\nresolved user id: {client.user_id()}", file=sys.stderr)
@@ -77,13 +71,13 @@ def _dispatch(args: argparse.Namespace, settings) -> int:
     builder = FeedBuilder(settings)
     try:
         if args.command == "dump":
-            start, end = builder.window()
-            rows = builder.fetch_rows()
+            window = builder.window()
+            rows = builder.fetch_rows(window)
             if args.limit:
                 rows = rows[: args.limit]
             text = json.dumps(rows, indent=2, ensure_ascii=False)
-            _emit(text.encode("utf-8"), getattr(args, "output", None))
-            print(f"{len(rows)} events between {start:%Y-%m-%d} and {end:%Y-%m-%d}", file=sys.stderr)
+            _emit(text.encode("utf-8"), args.output)
+            print(f"{len(rows)} events between {window[0]:%Y-%m-%d} and {window[1]:%Y-%m-%d}", file=sys.stderr)
             return 0
 
         if args.command == "events":
@@ -96,7 +90,7 @@ def _dispatch(args: argparse.Namespace, settings) -> int:
             return 0
 
         if args.command == "ics":
-            _emit(builder.build(), getattr(args, "output", None))
+            _emit(builder.build(), args.output)
             return 0
     finally:
         builder.close()

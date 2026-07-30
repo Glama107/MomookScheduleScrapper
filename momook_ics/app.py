@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Response
@@ -12,11 +11,16 @@ from fastapi import FastAPI, HTTPException, Response
 from .config import get_settings
 from .feed import FeedBuilder
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-)
 log = logging.getLogger("momook_ics")
+
+
+def configure_logging(verbose: bool = False) -> None:
+    """Set up root logging. Both entry points call this, exactly once."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    )
+
 
 settings = get_settings()
 builder: FeedBuilder | None = None
@@ -25,12 +29,7 @@ builder: FeedBuilder | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global builder
-    settings.require_credentials()
-    if not settings.feed_token:
-        raise RuntimeError(
-            "MOMOOK_FEED_TOKEN is required: it is the only thing protecting your "
-            "schedule at a public URL. Generate one with `openssl rand -hex 24`."
-        )
+    settings.require_serving()
     builder = FeedBuilder(settings)
     log.info(
         "Serving %s → /calendar/%s.ics (window: -%dd/+%dd, refresh %ds)",
@@ -57,9 +56,9 @@ def _check_token(token: str) -> None:
 
 
 @app.get("/healthz")
-def healthz() -> dict:
+async def healthz() -> dict:
     assert builder is not None
-    age = time.monotonic() - builder.cached_at if builder.cached_at else None
+    age = builder.cache_age_seconds
     return {
         "status": "ok",
         "cache_age_seconds": round(age) if age is not None else None,
@@ -68,11 +67,13 @@ def healthz() -> dict:
 
 
 @app.get("/calendar/{token}.ics")
-def calendar(token: str, refresh: bool = False) -> Response:
+def calendar(token: str) -> Response:
+    """Always the cached document. Refreshing is the background thread's job —
+    a request must never be able to trigger a multi-minute rebuild."""
     _check_token(token)
     assert builder is not None
     try:
-        document = builder.get(force=refresh)
+        document = builder.get()
     except Exception as exc:  # noqa: BLE001 - no cached copy to fall back on
         log.error("Cannot produce a calendar: %s", exc)
         raise HTTPException(status_code=503, detail="Momook is unreachable") from exc
@@ -88,12 +89,14 @@ def calendar(token: str, refresh: bool = False) -> Response:
 
 
 @app.get("/")
-def index() -> dict:
+async def index() -> dict:
     return {"service": "momook-ics", "feed": "/calendar/<token>.ics"}
 
 
 def main() -> None:
     import uvicorn
+
+    configure_logging()
 
     uvicorn.run(
         "momook_ics.app:app",

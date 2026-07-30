@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 
 from dateutil import parser as date_parser
 
+from ._shape import as_int as _as_int, first as _first
+
 # Event types, as defined in the front-end's scheduleEventType enum.
 EVENT_TYPE_LABELS = {
     "briefing": "Briefing",
@@ -69,12 +71,12 @@ class Event:
     categories: list[str] = field(default_factory=list)
 
 
-def parse_events(rows: list[dict], tz: ZoneInfo, *, only_user_id: int | None = None) -> list[Event]:
+def parse_events(rows: list[dict], tz: ZoneInfo) -> list[Event]:
+    """Parse whatever the query returned. Deciding *whose* events those are is
+    the query's job — see ``MomookClient.fetch_events``."""
     events: list[Event] = []
     for row in rows:
         if not isinstance(row, dict):
-            continue
-        if only_user_id is not None and not _involves_user(row, only_user_id):
             continue
         event = parse_event(row, tz)
         if event is not None:
@@ -92,7 +94,7 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
         # Zero-length or malformed rows still deserve a slot on the calendar.
         end = start + timedelta(hours=1)
 
-    event_id = _first(row, "Id", "id")
+    identifier = event_id(row)
     event_type = str(_first(row, "Type", "type") or "").strip()
     time_status = str(_first(row, "TimeStatus", "timeStatus") or "").strip()
 
@@ -109,32 +111,28 @@ def parse_event(row: dict, tz: ZoneInfo) -> Event | None:
     if time_status == "cancelled":
         summary = f"ANNULÉ — {summary}"
 
-    description_lines: list[str] = []
-    if training and training != topic:
-        description_lines.append(f"Formation : {training}")
-    if topic:
-        description_lines.append(f"Sujet : {topic}")
-    if group:
-        description_lines.append(f"Groupe : {group}")
-    instructors = [p.name for p in participants if p.role == "instructor"]
-    if instructors:
-        description_lines.append(f"Instructeur(s) : {', '.join(instructors)}")
-    others = [p.name for p in participants if p.role != "instructor"]
-    if others:
-        description_lines.append(f"Participants : {', '.join(others)}")
-    if resource:
-        description_lines.append(f"Ressource : {resource}")
-    if comment:
-        description_lines.append(f"Note : {comment}")
-    if time_status and time_status in TIME_STATUS_LABELS:
-        description_lines.append(f"Statut : {TIME_STATUS_LABELS[time_status]}")
-    if event_id is not None:
-        description_lines.append(f"Momook #{event_id}")
+    labelled = [
+        ("Formation", training if training != topic else ""),
+        ("Sujet", topic),
+        ("Groupe", group),
+        ("Instructeur(s)", ", ".join(p.name for p in participants if p.role == "instructor")),
+        ("Participants", ", ".join(p.name for p in participants if p.role != "instructor")),
+        ("Ressource", resource),
+        ("Note", comment),
+        ("Statut", TIME_STATUS_LABELS.get(time_status, "")),
+    ]
+    description_lines = [f"{label} : {value}" for label, value in labelled if value]
+    if identifier is not None:
+        description_lines.append(f"Momook #{identifier}")
 
     categories = [EVENT_TYPE_LABELS.get(event_type, event_type)] if event_type else []
 
     return Event(
-        uid=f"momook-{event_id}" if event_id is not None else f"momook-{start.timestamp():.0f}-{summary}",
+        # The fallback uid must not depend on anything rendered: a status change
+        # would alter the summary, and clients would see a new event, not an update.
+        uid=f"momook-{identifier}"
+        if identifier is not None
+        else f"momook-{start.timestamp():.0f}-{end.timestamp():.0f}-{event_type}",
         start=start,
         end=end,
         summary=summary,
@@ -161,28 +159,29 @@ def _summary(event_type: str, topic: str, training: str, resource: str) -> str:
     return type_label
 
 
-def _topic(row: dict) -> str:
-    for request in _rel(row, "ScheduleEventRequest"):
-        title = _title(request.get("TrainingTopic"))
-        if title:
-            return title
-    return _title(row.get("TrainingTopic"))
-
-
-def _training(row: dict) -> str:
-    for request in _rel(row, "ScheduleEventRequest"):
-        title = _title(request.get("Training"))
-        if title:
-            return title
-    return _title(row.get("Training"))
-
-
-def _group(row: dict) -> str:
-    for link in _rel(row, "ScheduleEventTrainingGroup"):
-        title = _title(link.get("TrainingGroup"))
+def _linked_title(row: dict, rel_name: str, entity_key: str) -> str:
+    """Title of the first ``rel_name`` link that carries an ``entity_key``."""
+    for link in _rel(row, rel_name):
+        title = _title(link.get(entity_key))
         if title:
             return title
     return ""
+
+
+def _topic(row: dict) -> str:
+    return _linked_title(row, "ScheduleEventRequest", "TrainingTopic") or _title(
+        row.get("TrainingTopic")
+    )
+
+
+def _training(row: dict) -> str:
+    return _linked_title(row, "ScheduleEventRequest", "Training") or _title(
+        row.get("Training")
+    )
+
+
+def _group(row: dict) -> str:
+    return _linked_title(row, "ScheduleEventTrainingGroup", "TrainingGroup")
 
 
 def _resource(row: dict) -> str:
@@ -192,10 +191,9 @@ def _resource(row: dict) -> str:
         ("ScheduleEventSimulator", "SimulatorEntity"),
         ("ScheduleEventAircraft", "AircraftEntity"),
     ):
-        for link in _rel(row, rel_name):
-            title = _title(link.get(entity_key))
-            if title:
-                return title
+        title = _linked_title(row, rel_name, entity_key)
+        if title:
+            return title
     return ""
 
 
@@ -235,26 +233,10 @@ def _role(raw: object) -> str:
     return ""
 
 
-def _involves_user(row: dict, user_id: int) -> bool:
-    """Whether ``user_id`` is a participant of ``row``.
 
-    The API is already filtered server-side on the user, and often returns the
-    participant relations empty. So an absence of participant data means "yes,
-    the server matched it" — only an explicit list of other people excludes it.
-    """
-    saw_any = False
-    for rel_name in ("ScheduleEventUser", "ScheduleEventAttendee"):
-        for link in _rel(row, rel_name):
-            candidate = link.get("UserId")
-            if candidate is None:
-                user = link.get("User") or link.get("CoreUser") or {}
-                candidate = user.get("Id") if isinstance(user, dict) else None
-            if candidate is None:
-                continue
-            saw_any = True
-            if _as_int(candidate) == user_id:
-                return True
-    return not saw_any
+def event_id(row: dict) -> object:
+    """The event's identifier, however this payload spells it."""
+    return _first(row, "Id", "id")
 
 
 def _rel(row: dict, name: str) -> list[dict]:
@@ -271,28 +253,10 @@ def _rel(row: dict, name: str) -> list[dict]:
 def _title(entity: object) -> str:
     if not isinstance(entity, dict):
         return ""
-    for key in ("Title", "title", "Name", "name", "TitleFull", "Number"):
-        value = entity.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+    value = _first(entity, "Title", "title", "Name", "name", "TitleFull", "Number")
+    return value.strip() if isinstance(value, str) else ""
 
 
-def _first(row: dict, *keys: str) -> object:
-    for key in keys:
-        if key in row and row[key] not in (None, ""):
-            return row[key]
-    return None
-
-
-def _as_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value)
-    return None
 
 
 def _parse_datetime(value: object, tz: ZoneInfo) -> datetime | None:
@@ -309,12 +273,9 @@ def _parse_datetime(value: object, tz: ZoneInfo) -> datetime | None:
     if text.isdigit():
         return datetime.fromtimestamp(int(text), tz)
     try:
-        parsed = date_parser.isoparse(text)
-    except ValueError:
-        try:
-            parsed = date_parser.parse(text)
-        except (ValueError, OverflowError):
-            return None
+        parsed = date_parser.parse(text)
+    except (ValueError, OverflowError):
+        return None
     if parsed.tzinfo is None:
         # Momook stores wall-clock times for the school's own timezone.
         return parsed.replace(tzinfo=tz)

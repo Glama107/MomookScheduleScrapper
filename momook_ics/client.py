@@ -16,6 +16,8 @@ from datetime import datetime
 import httpx
 import pyotp
 
+from ._shape import as_int, first
+
 log = logging.getLogger(__name__)
 
 # Values of the ``status`` field returned by the session endpoint.
@@ -58,6 +60,11 @@ USER_EVENT_RELATIONS = [
 # have not been given a status yet are returned too.
 TIME_STATUSES = ["empty", "started", "stopped", "paused", "cancelled", "planning"]
 
+# Invariant across every schedule query.
+_STATIC_SCHEDULE_PARAMS = [("Rel[]", rel) for rel in USER_EVENT_RELATIONS] + [
+    (":TimeStatus[]", status) for status in TIME_STATUSES
+]
+
 
 class MomookError(RuntimeError):
     """Any failure while talking to Momook."""
@@ -65,6 +72,14 @@ class MomookError(RuntimeError):
 
 class MomookAuthError(MomookError):
     """Login was rejected, or the session could not be established."""
+
+
+class MomookOverloadError(MomookError):
+    """Momook gave up on the query — its gateway timed out or bailed out.
+
+    Distinct from the other failures because it is the one worth retrying with
+    a narrower window; everything else stays fatal for the refresh.
+    """
 
 
 @dataclass(frozen=True)
@@ -85,11 +100,12 @@ class MomookClient:
         timeout: float = 30.0,
     ) -> None:
         self._credentials = credentials
-        self._lock = threading.RLock()
+        self._timeout = timeout
+        self._lock = threading.Lock()
         self._authenticated = False
         self._identity: dict | None = None
         self._http = httpx.Client(
-            base_url=base_url.rstrip("/"),
+            base_url=base_url,
             timeout=timeout,
             follow_redirects=False,
             headers={
@@ -97,6 +113,19 @@ class MomookClient:
                 "Accept": "application/json, text/plain, */*",
                 "User-Agent": "momook-ics/0.1 (+https://github.com/)",
             },
+        )
+
+    @classmethod
+    def from_settings(cls, settings) -> "MomookClient":
+        """The one way to turn configuration into a client."""
+        return cls(
+            settings.base_url,
+            Credentials(
+                username=settings.username,
+                password=settings.password,
+                totp_secret=settings.totp_secret,
+            ),
+            timeout=settings.http_timeout,
         )
 
     # -- lifecycle ---------------------------------------------------------
@@ -187,11 +216,14 @@ class MomookClient:
 
         if response.status_code in (401, 403) or _is_login_redirect(response):
             log.info("Momook session expired; re-authenticating")
-            with self._lock:
-                self._authenticated = False
             self.login()
             response = self._raw_get(path, params)
 
+        if response.status_code in (502, 503, 504):
+            raise MomookOverloadError(
+                f"GET {path}: Momook returned HTTP {response.status_code} "
+                f"(query too large or backend busy)"
+            )
         if response.status_code >= 400:
             raise MomookError(
                 f"GET {path} failed with HTTP {response.status_code}: {_short_body(response)}"
@@ -201,6 +233,8 @@ class MomookClient:
     def _raw_get(self, path: str, params: list[tuple[str, str]] | None) -> httpx.Response:
         try:
             return self._http.get(path, params=params)
+        except httpx.TimeoutException as exc:
+            raise MomookOverloadError(f"GET {path}: timed out after {self._timeout}s") from exc
         except httpx.HTTPError as exc:
             raise MomookError(f"GET {path} failed: {exc}") from exc
 
@@ -226,35 +260,36 @@ class MomookClient:
             )
         return user_id
 
-    def fetch_events(self, start: datetime, end: datetime, user_id: int | None = None) -> list[dict]:
-        """Schedule events overlapping ``[start, end]`` for one user.
+    def fetch_events(
+        self, start: datetime, end: datetime, *, user_id: int | None
+    ) -> list[dict]:
+        """Schedule events overlapping ``[start, end]``.
 
-        Momook filters with two half-open comparisons on unix timestamps:
-        the event must start before the window ends and end after it begins.
+        Momook filters with two half-open comparisons on unix timestamps: the
+        event must start before the window ends and end after it begins. Pass
+        ``user_id`` to have the server return only that person's events, or
+        ``None`` for everything the account can see.
         """
-        if user_id is None:
-            user_id = self.user_id()
-
         params: list[tuple[str, str]] = [
             (":Start", f"<{int(end.timestamp())}"),
             (":End", f">{int(start.timestamp())}"),
-            ("ScheduleEventUser:UserId[]", str(user_id)),
         ]
-        params += [("Rel[]", rel) for rel in USER_EVENT_RELATIONS]
-        params += [(":TimeStatus[]", status) for status in TIME_STATUSES]
+        if user_id is not None:
+            params.append(("ScheduleEventUser:UserId[]", str(user_id)))
+        params += _STATIC_SCHEDULE_PARAMS
 
         data = self._get("/api/schedule", params)
-        if data is None:
-            return []
+        if isinstance(data, list):
+            return data
         if isinstance(data, dict):
-            # Some list endpoints wrap the payload; unwrap the first list found.
+            # Some list endpoints wrap the rows one level down.
             for value in data.values():
                 if isinstance(value, list):
                     return value
-            return [data]
-        if not isinstance(data, list):
-            raise MomookError(f"Unexpected /api/schedule payload: {type(data).__name__}")
-        return data
+            raise MomookError(
+                f"/api/schedule returned an object with no row list; keys: {sorted(data)}"
+            )
+        raise MomookError(f"Unexpected /api/schedule payload: {type(data).__name__}")
 
 
 # -- helpers ---------------------------------------------------------------
@@ -293,21 +328,16 @@ def _short_body(response: httpx.Response, limit: int = 300) -> str:
 
 
 def _is_login_redirect(response: httpx.Response) -> bool:
-    if response.status_code not in (301, 302, 303, 307, 308):
+    if not response.has_redirect_location:
         return False
     return "login" in response.headers.get("location", "").lower()
 
 
 def _find_user_id(identity: dict) -> int | None:
     """Pull the user id out of the identity payload, tolerating key variations."""
-    candidates = ("Id", "id", "UserId", "user_id", "userId")
     for container in (identity, identity.get("user"), identity.get("User"), identity.get("data")):
-        if not isinstance(container, dict):
-            continue
-        for key in candidates:
-            value = container.get(key)
-            if isinstance(value, int):
-                return value
-            if isinstance(value, str) and value.isdigit():
-                return int(value)
+        if isinstance(container, dict):
+            user_id = as_int(first(container, "Id", "id", "UserId", "user_id", "userId"))
+            if user_id is not None:
+                return user_id
     return None
