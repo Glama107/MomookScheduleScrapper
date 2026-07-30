@@ -1,0 +1,41 @@
+services:
+  momook-ics:
+    build: .
+    image: momook-ics:latest
+    container_name: momook-ics
+    restart: unless-stopped
+
+    env_file: .env
+
+    # Loopback only. The service is unreachable from the network; the sole way
+    # in is the outbound Cloudflare tunnel, so the VPS opens no inbound port.
+    ports:
+      - "127.0.0.1:${MOMOOK_HOST_PORT:-8093}:8080"
+
+    # Nothing is ever written to disk: no volume, no writable layer.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status == 200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
