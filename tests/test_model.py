@@ -105,6 +105,10 @@ def main() -> None:
     assert "STATUS:CANCELLED" in ics
     assert "SUMMARY:ANNULÉ — Simulateur" in ics, _grep(ics, "SUMMARY")
     assert "X-PUBLISHED-TTL:PT15M" in ics
+    # Every event states its own silence, otherwise the client alerts by default.
+    assert ics.count("ACTION:NONE") == 3, _grep(ics, "ACTION")
+    assert ics.count("X-APPLE-DEFAULT-ALARM:TRUE") == 3
+    assert "TRIGGER;VALUE=DATE-TIME:19760401T005545Z" in ics, _grep(ics, "TRIGGER")
     assert "DTSTART;TZID=Europe/Paris:20260914T083000" in ics, _grep(ics, "DTSTART")
 
     # The parser must survive a payload it has never seen.

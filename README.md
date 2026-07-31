@@ -65,6 +65,12 @@ Then subscribe: on iOS, Settings → Apps → Calendar → Accounts → Add Acco
 Other → **Add Subscribed Calendar**, and paste
 `https://<your-host>/calendar/<MOMOOK_FEED_TOKEN>.ics`.
 
+The feed carries no alerts: each event ships an `ACTION:NONE` alarm marked
+`X-APPLE-DEFAULT-ALARM`, which stops iOS and macOS from applying their default
+alert times to a schedule you did not ask to be woken up about. Clients that
+ignore that convention still need the manual switch — on iOS, Settings → Apps →
+Calendar → Accounts → *the subscribed calendar* → **Remove Alarms**.
+
 `MOMOOK_FEED_TOKEN` is the only thing guarding the feed — a calendar
 subscription cannot authenticate any other way — so make it long and random
 (`openssl rand -hex 24`). Changing it revokes the old URL instantly.
