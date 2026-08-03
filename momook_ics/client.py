@@ -108,6 +108,12 @@ class MomookClient:
             base_url=base_url,
             timeout=timeout,
             follow_redirects=False,
+            # One client per account, and a deployment may hold a dozen. Queries
+            # go out one at a time and minutes apart, so a wide pool would only
+            # keep idle sockets alive: hold at most one between refreshes.
+            limits=httpx.Limits(
+                max_connections=2, max_keepalive_connections=1, keepalive_expiry=30.0
+            ),
             headers={
                 "X-Requested-With": "XMLHttpRequest",
                 "Accept": "application/json, text/plain, */*",
@@ -116,14 +122,14 @@ class MomookClient:
         )
 
     @classmethod
-    def from_settings(cls, settings) -> "MomookClient":
+    def from_account(cls, account, settings) -> "MomookClient":
         """The one way to turn configuration into a client."""
         return cls(
             settings.base_url,
             Credentials(
-                username=settings.username,
-                password=settings.password,
-                totp_secret=settings.totp_secret,
+                username=account.username,
+                password=account.password,
+                totp_secret=account.totp_secret,
             ),
             timeout=settings.http_timeout,
         )

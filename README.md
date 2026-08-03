@@ -6,8 +6,9 @@ account, reads your schedule through the app's own REST API, and serves it as
 an `.ics` feed your phone can subscribe to. When the school moves a lesson, your
 calendar follows.
 
-It uses a private API with your own credentials to read your own data. Nothing
-is bypassed, but the API is undocumented and may change without notice.
+It uses a private API with each subscriber's own credentials to read their own
+data. Nothing is bypassed, but the API is undocumented and may change without
+notice. One instance can serve [several people](#several-people).
 
 ## How it works
 
@@ -48,6 +49,7 @@ your 2FA QR code. Leave it empty if 2FA is off.
 ## Use
 
 ```bash
+momook-ics accounts        # list what is configured
 momook-ics whoami          # verify credentials and 2FA
 momook-ics events          # your schedule as text
 momook-ics ics -o out.ics  # write a calendar file
@@ -65,11 +67,59 @@ Then subscribe: on iOS, Settings → Apps → Calendar → Accounts → Add Acco
 Other → **Add Subscribed Calendar**, and paste
 `https://<your-host>/calendar/<MOMOOK_FEED_TOKEN>.ics`.
 
+## Several people
+
+One instance can serve a handful of colleagues. Each gets a numbered block in
+the `.env`, and their own feed URL:
+
+```bash
+MOMOOK_ACCOUNT_1_LABEL=Marie
+MOMOOK_ACCOUNT_1_USERNAME=marie@example.com
+MOMOOK_ACCOUNT_1_PASSWORD=…
+MOMOOK_ACCOUNT_1_FEED_TOKEN=…        # openssl rand -hex 24, one per person
+```
+
+Anything a block leaves out falls back to the global value, so
+`MOMOOK_TIMEZONE` and friends are set once. `CALENDAR_NAME`, `TIMEZONE`,
+`ONLY_MY_EVENTS` and `HIDE_CANCELLED` can be overridden per person —
+`ONLY_MY_EVENTS` especially, since whether lessons hang off the person or the
+group varies from one student to the next.
+
+```bash
+momook-ics accounts --urls     # the roster, and the URL to hand each person
+momook-ics -a Marie events     # -a takes a label, a block number or a username
+```
+
+Two accounts may not share a feed token — the service refuses to start, since
+they would serve each other's schedule. `serve` is all or nothing: every block
+must be complete. One-off commands only validate the account they act on.
+
+Refreshes cost far more than they look: a single one is a series of queries
+holding a whole schedule window in memory. So they run **one at a time** on a
+single shared thread, in round-robin, `MOMOOK_REFRESH_GAP` seconds apart —
+adding people lengthens the cycle instead of multiplying the load on the
+school's server. Keep `CACHE_TTL` above roughly *(number of accounts × 2 min)*;
+the log warns when the roster stops fitting in the cycle.
+
+Requests are only ever answered from the cache, never by fetching: a feed whose
+first refresh has not landed yet returns `503` rather than holding the
+connection open for minutes. `/healthz` reports every account's cache age and
+last error, and contains no tokens.
+
+**What this does not do:** the passwords sit in the `.env` in plain text, and
+the service needs them that way — it re-authenticates unattended every
+`CACHE_TTL`, so nothing one-way like a hash can stand in for them. Whoever
+administers the host can read them. Hosting other people's credentials is a
+promise; make sure they know they are making it.
+
 The feed carries no alerts: each event ships an `ACTION:NONE` alarm marked
 `X-APPLE-DEFAULT-ALARM`, which stops iOS and macOS from applying their default
-alert times to a schedule you did not ask to be woken up about. Clients that
-ignore that convention still need the manual switch — on iOS, Settings → Apps →
-Calendar → Accounts → *the subscribed calendar* → **Remove Alarms**.
+alert times to a schedule you did not ask to be woken up about.
+
+Leave the subscription's **Remove Alarms** switch *off*. It strips every VALARM
+the feed sends — including the silent one — which puts the event back in the
+"no alarm" state that invites the default alert. The two settings work against
+each other; the feed already says what the switch was meant to say.
 
 `MOMOOK_FEED_TOKEN` is the only thing guarding the feed — a calendar
 subscription cannot authenticate any other way — so make it long and random
@@ -89,11 +139,17 @@ Every setting is an environment variable prefixed with `MOMOOK_`; see
 | `TIMEZONE` | `Europe/Paris` | applied to timestamps returned without an offset |
 | `DAYS_PAST` / `DAYS_FUTURE` | 7 / 90 | feed window |
 | `CHUNK_DAYS` | 21 | window is fetched in slices; MOMook 504s on wide queries |
-| `CACHE_TTL` | 1800 | seconds between background refreshes |
+| `CACHE_TTL` | 1800 | seconds between two refreshes of the same account |
+| `REFRESH_GAP` | 15 | seconds of quiet between two accounts' refreshes |
 | `HTTP_TIMEOUT` | 120 | MOMook is slow; refreshes run off the request path |
 | `ONLY_MY_EVENTS` | `true` | keep only sessions you are enrolled in |
 | `HIDE_CANCELLED` | `false` | drop cancellations instead of striking them through |
 | `CALENDAR_NAME` | `Momook` | name shown in the calendar app |
+
+Add a person with `MOMOOK_ACCOUNT_<n>_…`: `LABEL`, `USERNAME`, `PASSWORD`,
+`TOTP_SECRET`, `FEED_TOKEN`, plus `CALENDAR_NAME`, `TIMEZONE`,
+`ONLY_MY_EVENTS` and `HIDE_CANCELLED` to override a global. A misspelt name is
+refused at start-up rather than silently ignored.
 
 If the feed comes out empty, your school may attach lessons to your group rather
 than to you individually: set `ONLY_MY_EVENTS=false`. If times are off, check
@@ -104,6 +160,7 @@ The mapping to `SUMMARY`/`DESCRIPTION` lives in `momook_ics/model.py`.
 
 ```bash
 python -m tests.test_model   # event mapping and ICS output, offline
+python -m tests.test_config  # account blocks, inheritance, token rules
 python -m tests.test_app     # HTTP routes, MOMook stubbed
 ```
 
