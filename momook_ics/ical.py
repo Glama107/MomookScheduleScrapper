@@ -17,11 +17,13 @@ REFRESH_INTERVAL = "PT15M"
 
 # A school schedule is not something to be woken up about: the feed carries no
 # alarms. But an event that simply omits VALARM inherits the client's default
-# alert, so silence has to be stated. ACTION:NONE (RFC 9074) is the standard way
-# to say "there is an alarm here, and it does nothing"; X-APPLE-DEFAULT-ALARM is
-# what makes iOS and macOS treat it as the event's default and stop adding their
-# own. The trigger is Apple's own sentinel date, kept verbatim so their parser
-# recognises the shape.
+# alert, so silence has to be stated: this block occupies the slot the default
+# would have filled. ACTION:NONE is not in RFC 5545 — it is the convention Apple
+# Calendar itself exports for an event whose alert is "None", down to the 1976
+# sentinel trigger, and X-APPLE-DEFAULT-ALARM is the half that makes iOS and
+# macOS stop adding one of their own. Reproduced verbatim so their parser
+# recognises the shape; clients that do not know it see an alarm that does
+# nothing, which is the intended outcome anyway.
 _NO_ALARM_TRIGGER = datetime(1976, 4, 1, 0, 55, 45, tzinfo=timezone.utc)
 
 
