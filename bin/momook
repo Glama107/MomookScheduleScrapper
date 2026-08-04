@@ -69,10 +69,15 @@ case "$command" in
         usage
         ;;
     add|remove)
-        # Only restart when the .env actually changed; a cancelled `add` or a
-        # rejected password must leave the running service alone.
+        # Restart only if the file actually changed. A cancelled removal, a
+        # rejected password or a plain `--help` must leave the service alone.
+        before="$(cksum < .env 2>/dev/null || true)"
         run_cli "$command" "$@"
-        restart
+        if [ "$before" = "$(cksum < .env 2>/dev/null || true)" ]; then
+            echo "→ .env unchanged, leaving the service alone"
+        else
+            restart
+        fi
         ;;
     urls)
         run_cli url "$@"
