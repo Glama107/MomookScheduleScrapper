@@ -49,7 +49,7 @@ _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
 
 
-def _normalize_totp(value: str) -> str:
+def normalize_totp(value: str) -> str:
     # QR-code secrets are often shown in spaced, lowercase groups.
     return value.replace(" ", "").upper()
 
@@ -77,11 +77,25 @@ class Account(BaseModel):
     @field_validator("totp_secret")
     @classmethod
     def _clean_totp(cls, value: str) -> str:
-        return _normalize_totp(value)
+        return normalize_totp(value)
 
     def var(self, key: str) -> str:
         """The environment variable a given field of this account is read from."""
         return self.env_prefix + key
+
+    @property
+    def index(self) -> int | None:
+        """This account's block number, or None for the unnumbered one."""
+        match = re.match(r"^" + ENV_PREFIX + r"ACCOUNT_(\d+)_$", self.env_prefix)
+        return int(match.group(1)) if match is not None else None
+
+    def feed_path(self) -> str:
+        return "/calendar/{}.ics".format(self.feed_token)
+
+    def feed_url(self, public_url: str = "") -> str:
+        """The URL to hand this person. Falls back to the bare path when the
+        deployment has not been told its own address."""
+        return public_url.rstrip("/") + self.feed_path() if public_url else self.feed_path()
 
     def missing(self) -> list[str]:
         """The variables this account still needs before it can sign in."""
@@ -144,6 +158,11 @@ class Settings(BaseSettings):
     # Shared secret in the feed URL. Anyone holding it can read that schedule.
     feed_token: str = ""
 
+    # Where this deployment answers from, e.g. https://momook.example.com. Only
+    # used to print a URL somebody can actually subscribe to; the service never
+    # calls itself.
+    public_url: str = ""
+
     calendar_name: str = "Momook"
 
     # Only include events the signed-in user is actually a participant of.
@@ -167,7 +186,7 @@ class Settings(BaseSettings):
         """Every configured account, the unnumbered one first."""
         return self._accounts
 
-    @field_validator("base_url")
+    @field_validator("base_url", "public_url")
     @classmethod
     def _strip_trailing_slash(cls, value: str) -> str:
         return value.rstrip("/")
@@ -175,7 +194,7 @@ class Settings(BaseSettings):
     @field_validator("totp_secret")
     @classmethod
     def _clean_totp(cls, value: str) -> str:
-        return _normalize_totp(value)
+        return normalize_totp(value)
 
     def require_accounts(self) -> None:
         """That there is anything at all to act on. Whether a given account is
@@ -226,6 +245,50 @@ def env_layers() -> Mapping[str, str]:
     return merged
 
 
+def account_var(name: str) -> tuple[int, str] | None:
+    """The block number and field a variable belongs to, or None if it is not
+    part of a numbered account at all."""
+    match = _ACCOUNT_VAR.match(name)
+    return (int(match.group(1)), match.group(2)) if match is not None else None
+
+
+def duplicate_keys(path: str = ENV_FILE) -> list[str]:
+    """Variables the .env file assigns more than once.
+
+    dotenv keeps the last assignment and says nothing about the others, so a
+    block pasted twice without renumbering quietly replaces the one above it —
+    one person's feed silently becoming somebody else's. Cheap to spot, so it
+    is worth saying out loud.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return []
+
+    seen: set[str] = set()
+    twice: list[str] = []
+    for line in lines:
+        key = assigned_key(line)
+        if key is None:
+            continue
+        if key in seen and key not in twice:
+            twice.append(key)
+        seen.add(key)
+    return twice
+
+
+def assigned_key(line: str) -> str | None:
+    """The variable a .env line assigns, or None for a comment or blank."""
+    text = line.strip()
+    if not text or text.startswith("#") or "=" not in text:
+        return None
+    name = text.split("=", 1)[0].strip()
+    if name.startswith("export "):
+        name = name[len("export ") :].strip()
+    return name or None
+
+
 def parse_accounts(env: Mapping[str, str], defaults: Settings) -> list[Account]:
     """Collect the numbered blocks in ``env``, plus the unnumbered account.
 
@@ -233,9 +296,10 @@ def parse_accounts(env: Mapping[str, str], defaults: Settings) -> list[Account]:
     """
     blocks: dict[int, dict[str, str]] = {}
     for name, value in env.items():
-        match = _ACCOUNT_VAR.match(name)
-        if match is not None:
-            blocks.setdefault(int(match.group(1)), {})[match.group(2)] = value
+        parsed = account_var(name)
+        if parsed is not None:
+            index, field = parsed
+            blocks.setdefault(index, {})[field] = value
 
     accounts: list[Account] = [
         _from_block(index, block, defaults) for index, block in sorted(blocks.items())

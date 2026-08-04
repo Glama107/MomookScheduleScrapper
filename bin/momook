@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+#
+# The CLI, run against the deployment. From the host that serves the feed:
+#
+#     ~/apps/momook-ics/bin/momook add        # add somebody, get their URL
+#     ~/apps/momook-ics/bin/momook urls       # everyone's URL
+#     ~/apps/momook-ics/bin/momook remove Tom
+#
+# It runs the image that is already built, with the deployment directory mounted
+# so the .env can be edited, and restarts the service when the roster changed —
+# the running container reads its configuration once, at start-up.
+#
+# The directory is mounted rather than the file: replacing a bind-mounted .env
+# in place is not possible, and the CLI writes by rename so it can never leave
+# half a config behind.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVICE=momook-ics
+
+cd "$HERE"
+
+usage() {
+    cat <<'USAGE'
+usage: momook <command> [options]
+
+  add [--label NAME --username U --password P --totp-secret S]
+                          add an account; asks for whatever is left out,
+                          tries the credentials, prints the feed URL
+  urls [NAME]             the URL to hand out, for everyone or for one person
+  list                    the roster, with each feed URL
+  remove NAME             take somebody off the roster
+  restart                 rebuild and restart the service
+  logs [-f]               the service's logs
+  health                  what each account's feed is doing
+
+Anything else is passed straight to `momook-ics`.
+USAGE
+}
+
+run_cli() {
+    docker compose run --rm --no-deps \
+        --user "$(id -u):$(id -g)" \
+        --volume "$HERE:/data" \
+        --workdir /data \
+        "$SERVICE" momook-ics "$@"
+}
+
+restart() {
+    echo "→ restarting so the service picks up the new roster"
+    docker compose up -d --force-recreate
+    for _ in $(seq 1 30); do
+        case "$(docker inspect -f '{{.State.Health.Status}}' "$SERVICE" 2>/dev/null || echo missing)" in
+            healthy) echo "✓ running"; return 0 ;;
+            unhealthy) echo "✗ unhealthy"; docker compose logs --tail 30; return 1 ;;
+        esac
+        sleep 2
+    done
+    echo "✗ timed out waiting for health"
+    docker compose logs --tail 30
+    return 1
+}
+
+command="${1:-}"
+[ $# -gt 0 ] && shift || true
+
+case "$command" in
+    ""|-h|--help|help)
+        usage
+        ;;
+    add|remove)
+        # Only restart when the .env actually changed; a cancelled `add` or a
+        # rejected password must leave the running service alone.
+        run_cli "$command" "$@"
+        restart
+        ;;
+    urls)
+        run_cli url "$@"
+        ;;
+    list)
+        run_cli accounts --urls "$@"
+        ;;
+    restart)
+        restart
+        ;;
+    logs)
+        docker compose logs --tail 60 "$@"
+        ;;
+    health)
+        curl -fsS "http://127.0.0.1:${MOMOOK_HOST_PORT:-8093}/healthz" | python3 -m json.tool
+        ;;
+    *)
+        run_cli "$command" "$@"
+        ;;
+esac
