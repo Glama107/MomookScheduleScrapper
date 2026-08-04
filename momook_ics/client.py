@@ -220,7 +220,7 @@ class MomookClient:
         self._ensure_authenticated()
         response = self._raw_get(path, params)
 
-        if response.status_code in (401, 403) or _is_login_redirect(response):
+        if _is_session_lost(response):
             log.info("Momook session expired; re-authenticating")
             self.login()
             response = self._raw_get(path, params)
@@ -337,6 +337,35 @@ def _is_login_redirect(response: httpx.Response) -> bool:
     if not response.has_redirect_location:
         return False
     return "login" in response.headers.get("location", "").lower()
+
+
+# Momook's answer to a request whose PHP session is gone. It does not use 401:
+# `{"message": "Not authorized", "errors": "Permission denied"}` under a 422 —
+# the same status it returns for an ordinary validation error, which is why the
+# body has to be read to tell the two apart.
+_SESSION_LOST = ("not authorized", "permission denied")
+
+
+def _is_session_lost(response: httpx.Response) -> bool:
+    """Whether this response means "log in again" rather than "you got it wrong".
+
+    Sessions do expire — and signing the same Momook user in elsewhere ends this
+    one immediately — so a long-running feed hits this routinely. Recognising it
+    is the difference between one re-login and a service that stays broken until
+    it is restarted.
+    """
+    if response.status_code in (401, 403) or _is_login_redirect(response):
+        return True
+    if response.status_code != 422:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    body = " ".join(str(payload.get(key, "")) for key in ("message", "errors")).lower()
+    return any(marker in body for marker in _SESSION_LOST)
 
 
 def _find_user_id(identity: dict) -> int | None:
