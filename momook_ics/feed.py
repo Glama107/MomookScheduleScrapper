@@ -30,6 +30,27 @@ log = logging.getLogger(__name__)
 MIN_SLICE_DAYS = 3
 MAX_SLICE_DEPTH = 3
 
+# How many refresh cycles a feed may miss before its cached calendar counts as
+# no longer true. A failed refresh is invisible from the outside — the last good
+# copy keeps being served, and subscribers go on being shown a schedule that
+# stopped moving — so somebody has to call it, and this is the number that does.
+# Two in a row is a bad afternoon; three is a feed that has quietly stopped.
+STALE_AFTER_CYCLES = 3
+
+
+@dataclass(frozen=True)
+class Harvest:
+    """One pass over the window: what came back, and what would not.
+
+    ``gaps`` are the ranges Momook never managed to answer. They are the reason
+    this is not just a list of rows: a refresh that lost a fortnight has to say
+    so, or the calendar it renders reads as "those lessons were cancelled".
+    """
+
+    rows: list[dict]
+    gaps: list[tuple[datetime, datetime]]
+    horizon: datetime
+
 
 class FeedBuilder:
     """One account's calendar: fetched, rendered, and held warm."""
@@ -300,6 +321,7 @@ class FeedRegistry:
         self._by_token = {builder.account.feed_token: builder for builder in self._builders}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._started_at = time.monotonic()
 
     def __len__(self) -> int:
         return len(self._builders)
@@ -319,6 +341,27 @@ class FeedRegistry:
             if hmac.compare_digest(token, candidate):
                 found = builder
         return found
+
+    @property
+    def stale_after_seconds(self) -> float:
+        """How old a cached calendar may get before it stops counting as true."""
+        return STALE_AFTER_CYCLES * self._settings.cache_ttl
+
+    def stale(self) -> list[str]:
+        """The accounts whose cached calendar can no longer be trusted."""
+        limit = self.stale_after_seconds
+        uptime = time.monotonic() - self._started_at
+        stale = []
+        for builder in self._builders:
+            age = builder.cache_age_seconds
+            if age is None:
+                # Nothing built yet: ordinary for the first minutes after a
+                # start-up, a feed that never came up at all once past them.
+                if uptime > limit:
+                    stale.append(builder.label)
+            elif age > limit:
+                stale.append(builder.label)
+        return stale
 
     def status(self) -> list[dict]:
         """Per-account health, with nothing secret in it."""

@@ -183,6 +183,12 @@ first refresh has not landed yet returns `503` rather than holding the
 connection open for minutes. `/healthz` reports every account's cache age and
 last error, and contains no tokens.
 
+A refresh that fails changes nothing a subscriber can see — the last good
+calendar keeps being served, valid and no longer true — so `/healthz` judges the
+feeds by the age of what they hold: past three refresh cycles without a fresh
+one, it answers `503` and names the accounts, which is what turns the container
+unhealthy. Liveness would have called two silent weeks a healthy service.
+
 **What this does not do:** the passwords sit in the `.env` in plain text, and
 the service needs them that way — it re-authenticates unattended every
 `CACHE_TTL`, so nothing one-way like a hash can stand in for them. Whoever

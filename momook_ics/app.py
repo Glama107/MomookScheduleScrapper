@@ -59,11 +59,42 @@ def _feed_for(token: str) -> FeedBuilder:
 
 
 @app.get("/healthz")
-async def healthz() -> dict:
+async def healthz(response: Response) -> dict:
+    """Green only while every feed holds a calendar young enough to be true.
+
+    A feed whose refreshes fail keeps serving the copy it already has, so
+    nothing downstream notices: the document stays valid, the subscribers stay
+    subscribed, and the schedule they are shown quietly stops being the one the
+    school is running. Staleness is what this reports, then — and a stale feed
+    answers 503, so the container's health check turns it red instead of
+    calling a service that has stopped working healthy.
+
+    `degraded` is the lesser state: something failed, but the calendar on offer
+    is still recent enough to stand.
+    """
     assert registry is not None
     accounts = registry.status()
+    stale = registry.stale()
+
+    if stale:
+        status = "stale"
+        # What the container's health check reads: a feed nobody should be
+        # believing has no business answering 200.
+        response.status_code = 503
+    elif any(
+        account["last_error"] is not None or account["unfetched_ranges"]
+        for account in accounts
+    ):
+        # Something failed, but what is on offer is recent enough to stand: a
+        # refresh that errored, or one that came back with a hole in it.
+        status = "degraded"
+    else:
+        status = "ok"
+
     return {
-        "status": "ok" if all(a["last_error"] is None for a in accounts) else "degraded",
+        "status": status,
+        "stale": stale,
+        "stale_after_seconds": round(registry.stale_after_seconds),
         "accounts": accounts,
     }
 

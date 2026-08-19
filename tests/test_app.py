@@ -29,6 +29,10 @@ from momook_ics import feed as feed_module  # noqa: E402
 # token lookup, status, shutdown — only the per-account feeds are faked.
 COLD: set = set()
 
+# Accounts still serving a calendar that stopped being refreshed: valid to the
+# byte, no longer true. The failure the deployment actually had.
+STALE: set = set()
+
 
 class FakeBuilder:
     """Stands in for a real feed: no Momook, no fetching."""
@@ -37,9 +41,13 @@ class FakeBuilder:
         self.account = account
         self.label = account.label
         self.cold = account.label in COLD
+        self.stale = account.label in STALE
         self.last_error = "MomookAuthError: rejected" if self.cold else None
         self.unfetched_ranges = 0
-        self.cache_age_seconds = None if self.cold else 12.0
+        if self.cold:
+            self.cache_age_seconds = None
+        else:
+            self.cache_age_seconds = 400_000.0 if self.stale else 12.0
         self._document = f"BEGIN:VCALENDAR\r\nX-WR-CALNAME:{account.label}\r\nEND:VCALENDAR\r\n"
 
     def get(self) -> bytes | None:
@@ -87,7 +95,22 @@ def main() -> None:
         health = client.get("/healthz").json()
         assert health["status"] == "degraded", health
 
-    print("ok — per-account tokens, feed, cold start and health endpoints behave")
+    # And the failure that says nothing: refreshes have been failing long enough
+    # that the calendar on offer is a fortnight old. It is still served — pulling
+    # it out from under the subscribers would not make it any truer — but health
+    # has to answer 503, or the container goes on calling itself healthy.
+    COLD.clear()
+    STALE.add("Marie")
+
+    with TestClient(app_module.app) as client:
+        assert client.get("/calendar/marie-token.ics").status_code == 200
+
+        health = client.get("/healthz")
+        assert health.status_code == 503, health.status_code
+        assert health.json()["status"] == "stale", health.json()
+        assert health.json()["stale"] == ["Marie"], health.json()
+
+    print("ok — per-account tokens, feed, cold start, staleness and health behave")
 
 
 if __name__ == "__main__":

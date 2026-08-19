@@ -95,7 +95,9 @@ case "$command" in
         docker compose logs --tail 60 "$@"
         ;;
     health)
-        curl -fsS "http://127.0.0.1:${MOMOOK_HOST_PORT:-8093}/healthz" | python3 -m json.tool
+        # Not -f: a stale feed answers 503, and that is precisely the moment the
+        # body is worth reading rather than swallowing.
+        curl -sS "http://127.0.0.1:${MOMOOK_HOST_PORT:-8093}/healthz" | python3 -m json.tool
         ;;
     *)
         run_cli "$command" "$@"
