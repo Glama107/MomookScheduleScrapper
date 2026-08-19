@@ -58,6 +58,7 @@ momook-ics add             # add somebody, and print the URL to hand them
 momook-ics accounts --urls # the roster, with everyone's feed URL
 momook-ics url Marie       # one URL, to copy and paste
 momook-ics remove Marie    # take somebody off the roster
+momook-ics password Marie  # new Momook password, same feed URL
 
 momook-ics whoami          # verify credentials and 2FA
 momook-ics events          # your schedule as text
@@ -80,6 +81,7 @@ can be edited, and restarts the service when the roster changed:
 ./bin/momook add            # add somebody, then restart
 ./bin/momook urls           # everyone's URL
 ./bin/momook remove Marie
+./bin/momook password Marie # after they change it on Momook's side
 ./bin/momook health         # what each feed is doing
 ```
 
@@ -125,11 +127,19 @@ empty.
 momook-ics accounts --urls     # the roster, and the URL to hand each person
 momook-ics url Marie           # just the URL
 momook-ics remove Marie        # and off again
+momook-ics password Marie      # a new password, in place
 momook-ics -a Marie events     # -a takes a label, a block number or a username
 ```
 
 Set `MOMOOK_PUBLIC_URL` to the address the deployment answers at, and these
 print URLs people can subscribe to rather than bare paths.
+
+When somebody changes their Momook password, `password` is the command — not
+`remove` and `add` again. It tries the new one, then rewrites that single line
+and nothing else, because the feed token is what the person's phone is
+subscribed to: minting a fresh one turns their calendar into a 404 that no
+notification ever mentions. `--totp-secret` moves alongside it when 2FA was
+reset at the same time.
 
 Writing to the `.env` keeps the previous file as `.env.bak-<timestamp>`, and
 narrows the permissions to the owner if they were wider — it is a file full of

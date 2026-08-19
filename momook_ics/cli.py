@@ -4,6 +4,7 @@
     momook-ics accounts --urls  # the roster, with everyone's feed URL
     momook-ics url NAME         # just one URL, to copy and paste
     momook-ics remove NAME      # take somebody off the roster
+    momook-ics password NAME    # new Momook password, same feed URL
 
     momook-ics whoami           # check credentials, print the identity payload
     momook-ics dump             # raw /api/schedule JSON (to refine the mapping)
@@ -11,7 +12,7 @@
     momook-ics ics -o out.ics   # write the calendar to a file
     momook-ics serve            # run the HTTP feed for every account
 
-The first four read and write the ``.env`` in the working directory, so they
+The first five read and write the ``.env`` in the working directory, so they
 run from wherever the deployment keeps it. The rest talk to Momook, and with
 more than one account configured they need to know which one: ``-a`` takes a
 label, a block number or a Momook username.
@@ -47,7 +48,7 @@ PROG = "momook-ics"
 
 # Commands that act on the configuration rather than on Momook. They have to
 # run over a broken or empty roster: adding the first account is exactly that.
-CONFIG_COMMANDS = frozenset({"accounts", "add", "remove", "url"})
+CONFIG_COMMANDS = frozenset({"accounts", "add", "password", "remove", "url"})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,6 +80,20 @@ def main(argv: list[str] | None = None) -> int:
         "--no-verify",
         action="store_true",
         help="write the block without trying the credentials first",
+    )
+
+    password = sub.add_parser(
+        "password", help="replace an account's Momook password, keeping its feed URL"
+    )
+    password.add_argument("name", nargs="?", help="a label, a block number or a username")
+    password.add_argument("--password", help="the new password; prompted for if omitted")
+    password.add_argument(
+        "--totp-secret", help="a new base32 2FA secret, if that changed as well"
+    )
+    password.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="write it without trying it against Momook first",
     )
 
     remove = sub.add_parser("remove", help="take an account out of the .env")
@@ -128,6 +143,9 @@ def _dispatch(args: argparse.Namespace, settings: Settings) -> int:
 
     if args.command == "add":
         return _add_account(settings, args)
+
+    if args.command == "password":
+        return _set_password(settings, args)
 
     if args.command == "remove":
         return _remove_account(settings, args.name, args.yes)
@@ -447,6 +465,73 @@ def _verify(settings: Settings, username: str, password: str, totp_secret: str) 
             "empty until the school books something"
         )
         return settings.only_my_events
+
+
+def _set_password(settings: Settings, args: argparse.Namespace) -> int:
+    """Replace one account's password where it sits, and leave the rest alone.
+
+    A password that stopped working is exactly the change that must not go
+    through `remove` then `add`: that mints a new feed token, and the URL the
+    person is already subscribed to — sitting in their phone's settings, which
+    nobody looks at — quietly stops resolving. Only the password moves here.
+    """
+    # Named as a positional here, but `-a` is how every other command spells it;
+    # take either rather than explaining the difference.
+    account = _select(settings, args.name or args.account)
+    if account is None:
+        return 2
+
+    password = (
+        args.password
+        if args.password is not None
+        else getpass.getpass(f"New Momook password for {account.label}: ")
+    )
+    if not password:
+        print("error: a password is required", file=sys.stderr)
+        return 2
+
+    totp = account.totp_secret
+    if args.totp_secret is not None:
+        totp = normalize_totp(args.totp_secret.strip())
+
+    # Tried before it is written down, for the same reason `add` does it: a
+    # mistyped password would otherwise turn up half an hour later as a failed
+    # background refresh, and look exactly like the problem it was meant to fix.
+    if not args.no_verify:
+        _verify(settings, account.username, password, totp)
+
+    values = {account.var("PASSWORD"): password}
+    if args.totp_secret is not None:
+        values[account.var("TOTP_SECRET")] = totp
+
+    try:
+        written, backup = envfile.set_values(ENV_FILE, values)
+    except (OSError, ValueError) as exc:
+        print(f"error: {ENV_FILE} not written: {exc}", file=sys.stderr)
+        return 1
+
+    missing = sorted(set(values) - set(written))
+    if not written:
+        print(
+            f"error: nothing changed in {ENV_FILE} — {', '.join(missing)} is set in the "
+            "environment itself, not in the file.",
+            file=sys.stderr,
+        )
+        return 1
+    if missing:
+        print(
+            "warning: {} not found in {}; set it there by hand".format(
+                ", ".join(missing), ENV_FILE
+            ),
+            file=sys.stderr,
+        )
+
+    print(f"✓ {account.label}'s password updated in {ENV_FILE}")
+    if backup:
+        print(f"  previous file kept as {backup}")
+    print("  their feed URL is unchanged; nobody has to re-subscribe.")
+    print("\nThe service picks it up once it restarts.")
+    return 0
 
 
 def _remove_account(settings: Settings, name: str, assume_yes: bool) -> int:

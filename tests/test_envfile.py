@@ -79,6 +79,47 @@ def test_adding_keeps_what_was_there() -> None:
     assert os.stat(path).st_mode & 0o077 == 0, "passwords stay unreadable to others"
 
 
+def test_a_new_password_leaves_the_rest_of_the_block_alone() -> None:
+    """What `momook-ics password` is for. The feed token above all has to come
+    out untouched: it is the URL somebody is already subscribed to, and a fresh
+    one would break that subscription silently, on a phone nobody looks at."""
+    path = write("password.env", "")
+    envfile.add_account(
+        path,
+        2,
+        {
+            "LABEL": "Samy",
+            "USERNAME": "samy@example.com",
+            "PASSWORD": "old",
+            "TOTP_SECRET": "",
+            "FEED_TOKEN": "kept-token",
+        },
+    )
+    before = dotenv_values(path)
+
+    written, backup = envfile.set_values(path, {"MOMOOK_ACCOUNT_2_PASSWORD": "new one$"})
+
+    assert written == ["MOMOOK_ACCOUNT_2_PASSWORD"], written
+    assert backup
+    after = dotenv_values(path)
+    assert after["MOMOOK_ACCOUNT_2_PASSWORD"] == "new one$", after
+    assert after["MOMOOK_ACCOUNT_2_FEED_TOKEN"] == "kept-token", after
+    assert {k: v for k, v in after.items() if not k.endswith("PASSWORD")} == {
+        k: v for k, v in before.items() if not k.endswith("PASSWORD")
+    }, after
+
+
+def test_setting_a_variable_that_is_not_in_the_file_reports_it() -> None:
+    """It only ever rewrites what is there. A block whose password lives in the
+    environment rather than the file has to be told about, not appended to."""
+    path = write("absent.env", "MOMOOK_ACCOUNT_1_USERNAME=paul\n")
+
+    written, backup = envfile.set_values(path, {"MOMOOK_ACCOUNT_1_PASSWORD": "x"})
+
+    assert written == [] and backup is None, (written, backup)
+    assert dotenv_values(path) == {"MOMOOK_ACCOUNT_1_USERNAME": "paul"}
+
+
 def test_removing_takes_the_whole_block_and_nothing_else() -> None:
     path = write("removes.env", "MOMOOK_TIMEZONE=Europe/Paris\n")
     envfile.add_account(path, 1, {"LABEL": "Paul", "USERNAME": "paul", "PASSWORD": "x"})

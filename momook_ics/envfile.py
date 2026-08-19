@@ -132,6 +132,35 @@ def drop_account(path: str, index: int) -> tuple[int, str | None]:
     return dropped, _rewrite(path, _squeeze(kept))
 
 
+def set_values(path: str, values: Mapping[str, str]) -> tuple[list[str], str | None]:
+    """Rewrite the given variables where they are already set, in place.
+
+    In place is the whole point: this is how a password that stopped working is
+    replaced, and everything else about the block — its number, its label, above
+    all its feed token — has to come out untouched. Writing a new block instead
+    would mint a new token, and the URL everybody is subscribed to would quietly
+    stop being theirs.
+
+    Every occurrence of a key is rewritten, not just the first: a file that
+    somehow says ``PASSWORD`` twice must not come out saying two different
+    things, with the reader picking the loser.
+
+    Returns the keys it found, and the backup path.
+    """
+    lines = _read(path)
+
+    written: list[str] = []
+    for position, line in enumerate(lines):
+        key = assigned_key(line)
+        if key is not None and key in values:
+            lines[position] = "{}={}".format(key, quote(values[key]))
+            written.append(key)
+
+    if not written:
+        return [], None
+    return sorted(set(written)), _rewrite(path, lines)
+
+
 def blank_out(path: str, names: Iterable[str]) -> tuple[int, str | None]:
     """Empty the given variables where they are set, leaving them in place.
 

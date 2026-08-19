@@ -29,6 +29,8 @@ usage: momook <command> [options]
                           tries the credentials, prints the feed URL
   urls [NAME]             the URL to hand out, for everyone or for one person
   list                    the roster, with each feed URL
+  password [NAME]         replace somebody's Momook password, keeping their
+                          feed URL — nobody has to re-subscribe
   remove NAME             take somebody off the roster
   restart                 rebuild and restart the service
   logs [-f]               the service's logs
@@ -71,7 +73,7 @@ case "$command" in
     ""|-h|--help|help)
         usage
         ;;
-    add|remove)
+    add|remove|password)
         # Restart only if the file actually changed. A cancelled removal, a
         # rejected password or a plain `--help` must leave the service alone.
         before="$(cksum < .env 2>/dev/null || true)"
