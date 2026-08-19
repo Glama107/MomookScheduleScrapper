@@ -15,10 +15,11 @@ import hmac
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .client import MomookClient, MomookOverloadError
+from .client import MomookAuthError, MomookClient, MomookError, MomookOverloadError
 from .config import Account, Settings
 from .ical import build_calendar
 from .model import Event, event_id, parse_events
@@ -43,6 +44,8 @@ class FeedBuilder:
         self._cached: bytes | None = None
         self._cached_at: float = 0.0
         self._last_error: str | None = None
+        self._known: list[Event] = []
+        self._gaps: int = 0
 
     @property
     def account(self) -> Account:
@@ -55,6 +58,11 @@ class FeedBuilder:
     @property
     def last_error(self) -> str | None:
         return self._last_error
+
+    @property
+    def unfetched_ranges(self) -> int:
+        """Ranges the last refresh could not get, and had to carry forward."""
+        return self._gaps
 
     @property
     def cache_age_seconds(self) -> float | None:
@@ -76,19 +84,57 @@ class FeedBuilder:
         )
 
     def fetch_rows(self, window: tuple[datetime, datetime] | None = None) -> list[dict]:
-        """Raw schedule rows for the whole window, fetched in slices.
+        """Raw schedule rows for the whole window — what ``dump`` prints."""
+        return self.harvest(window).rows
+
+    def harvest(self, window: tuple[datetime, datetime] | None = None) -> Harvest:
+        """Walk the window in slices, and report what could not be walked.
 
         Momook's gateway returns 504 on a query spanning several months, so the
-        window is walked in chunks. Slices overlap on events that straddle a
+        window goes out in chunks. Slices overlap on events that straddle a
         boundary, hence the dedupe by event id.
+
+        Two things keep a wide window affordable and survivable. It stops at the
+        school's horizon rather than at the far edge of the window: past a run
+        of empty slices there is nothing left to find, and every further query
+        is a slow way of confirming it. And a slice Momook will not give up —
+        after the halving in ``_fetch_slice`` has run out of room — becomes a
+        gap rather than the end of the refresh, so one stubborn fortnight cannot
+        cost the other eleven months.
         """
         start, end = window or self.window()
         user_id = self._client.user_id() if self._account.only_my_events else None
 
         by_id: dict[object, dict] = {}
         anonymous: list[dict] = []
+        gaps: list[tuple[datetime, datetime]] = []
+        now = datetime.now(self._tz)
+        attempted = 0
+        empty_run = 0
+        horizon = start
+
         for chunk_start, chunk_end in _slices(start, end, self._settings.chunk_days):
-            rows = self._fetch_slice(user_id, chunk_start, chunk_end)
+            attempted += 1
+            try:
+                rows = self._fetch_slice(user_id, chunk_start, chunk_end)
+            except MomookAuthError:
+                # Not a slow query — the credentials stopped working, and every
+                # remaining slice would only ask Momook to say so again.
+                raise
+            except MomookError as exc:
+                log.warning(
+                    "[%s] %s → %s: Momook would not answer (%s); keeping what the "
+                    "last refresh knew about it",
+                    self.label,
+                    chunk_start.date(),
+                    chunk_end.date(),
+                    exc,
+                )
+                gaps.append((chunk_start, chunk_end))
+                horizon = chunk_end
+                empty_run = 0
+                continue
+
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -98,9 +144,41 @@ class FeedBuilder:
                 else:
                     by_id[key] = row
 
+            horizon = chunk_end
+            if rows or chunk_start < now:
+                empty_run = 0
+                continue
+
+            # Only silence in the future counts: a quiet week last month says
+            # nothing about how far the schedule has been planned.
+            empty_run += 1
+            if empty_run >= self._settings.horizon_slices:
+                log.info(
+                    "[%s] Nothing booked after %s; that is the horizon",
+                    self.label,
+                    chunk_start.date(),
+                )
+                break
+
+        if attempted and len(gaps) == attempted:
+            # Everything failed: this is Momook being down, not a schedule that
+            # emptied out. Publishing now would replace the calendar with
+            # whatever was carried forward and reset its age, which is exactly
+            # how a broken feed passes for a healthy one.
+            raise MomookError(
+                f"Not one of the {attempted} schedule slices came back; "
+                "leaving the cached calendar alone"
+            )
+
         merged = list(by_id.values()) + anonymous
-        log.info("[%s] Fetched %d distinct schedule rows", self.label, len(merged))
-        return merged
+        log.info(
+            "[%s] Fetched %d distinct schedule rows out to %s%s",
+            self.label,
+            len(merged),
+            horizon.date(),
+            f" ({len(gaps)} range(s) unfetched)" if gaps else "",
+        )
+        return Harvest(rows=merged, gaps=gaps, horizon=horizon)
 
     def _fetch_slice(
         self, user_id: int, start: datetime, end: datetime, depth: int = 0
@@ -132,10 +210,42 @@ class FeedBuilder:
         return rows
 
     def fetch_events(self) -> list[Event]:
-        events = parse_events(self.fetch_rows(), self._tz)
+        harvest = self.harvest()
+        events = self._carry_over(parse_events(harvest.rows, self._tz), harvest.gaps)
+        with self._state_lock:
+            self._known = events
+            self._gaps = len(harvest.gaps)
         if self._account.hide_cancelled:
             events = [event for event in events if not event.cancelled]
         return events
+
+    def _carry_over(
+        self, events: list[Event], gaps: list[tuple[datetime, datetime]]
+    ) -> list[Event]:
+        """Keep what the last refresh knew about a range this one could not get.
+
+        A slice Momook refuses is Momook being slow, not the school cancelling a
+        fortnight of lessons — and the two are indistinguishable in the calendar
+        that comes out. Dropping them would take real lessons off everybody's
+        phone, so the last answer that did come back stands until a later
+        refresh replaces it.
+        """
+        if not gaps:
+            return events
+        seen = {event.uid for event in events}
+        kept = [
+            event
+            for event in self._known
+            if event.uid not in seen
+            and any(start <= event.start < end for start, end in gaps)
+        ]
+        log.warning(
+            "[%s] %d range(s) unfetched; carried %d event(s) over from the last refresh",
+            self.label,
+            len(gaps),
+            len(kept),
+        )
+        return events + kept
 
     def build(self) -> bytes:
         events = self.fetch_events()
@@ -219,6 +329,7 @@ class FeedRegistry:
                     round(age) if (age := builder.cache_age_seconds) is not None else None
                 ),
                 "last_error": builder.last_error,
+                "unfetched_ranges": builder.unfetched_ranges,
             }
             for builder in self._builders
         ]

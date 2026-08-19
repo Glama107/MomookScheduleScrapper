@@ -132,13 +132,24 @@ class Settings(BaseSettings):
     # and advertised to the calendar client.
     timezone: str = "Europe/Paris"
 
-    # How far back / forward the feed reaches, in days.
+    # How far back / forward the feed may reach, in days. Forward is a ceiling,
+    # not a promise: the fetch stops at the school's own horizon (see
+    # ``horizon_gap_days``), so raising this costs nothing until there is
+    # something out there to find.
     days_past: int = 7
-    days_future: int = 90
+    days_future: int = 365
 
     # Momook's gateway returns 504 on a query spanning several months, so the
     # window is fetched in slices of at most this many days.
     chunk_days: int = 21
+
+    # How many consecutive empty days, past today, mean the calendar is simply
+    # over. Nothing marks the end of a schedule, so the only way to find it is
+    # to keep asking until the answers stop coming — and the only way to stop is
+    # to decide how much silence counts as the end. Two months of it does; a
+    # summer break is shorter than that, and everything beyond gets picked up as
+    # the window slides forward day by day.
+    horizon_gap_days: int = 60
 
     # Seconds between background refreshes of one account's calendar. A full
     # refresh is several slow queries, so keep this well above a minute — a
@@ -185,6 +196,11 @@ class Settings(BaseSettings):
     def accounts(self) -> list[Account]:
         """Every configured account, the unnumbered one first."""
         return self._accounts
+
+    @property
+    def horizon_slices(self) -> int:
+        """Empty slices in a row that mean there is nothing further to fetch."""
+        return max(1, -(-self.horizon_gap_days // max(self.chunk_days, 1)))
 
     @field_validator("base_url", "public_url")
     @classmethod

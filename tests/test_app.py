@@ -38,6 +38,7 @@ class FakeBuilder:
         self.label = account.label
         self.cold = account.label in COLD
         self.last_error = "MomookAuthError: rejected" if self.cold else None
+        self.unfetched_ranges = 0
         self.cache_age_seconds = None if self.cold else 12.0
         self._document = f"BEGIN:VCALENDAR\r\nX-WR-CALNAME:{account.label}\r\nEND:VCALENDAR\r\n"
 

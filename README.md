@@ -147,6 +147,30 @@ would spend their time invalidating each other. `add` refuses a username that is
 already configured for that reason. `serve` is all or nothing: every block must
 be complete. One-off commands only validate the account they act on.
 
+## How far the feed reaches
+
+Forward as far as the school has actually planned. Nothing in the API marks the
+end of a schedule, so the only way to find it is to keep asking until the
+answers stop: the window is walked in slices, and once `HORIZON_GAP_DAYS` worth
+of them come back empty, that is the horizon and the walk stops there. A
+`DAYS_FUTURE` of a year therefore costs a year of queries only if there is a
+year of schedule out there — today, at a school planning two months ahead, it is
+five queries rather than eighteen. Everything published later is picked up as
+the window slides forward, one day at a time.
+
+A slice MOMook will not answer — the halving in `_fetch_slice` having run out of
+room — is not the end of the refresh either. It becomes a *gap*: the events the
+last good refresh knew about that fortnight are carried over into the new
+calendar, and the rest of the year is published as usual. The alternative is
+worse than it sounds — a slice dropped for being slow is indistinguishable, in
+the file that comes out, from a fortnight of lessons the school cancelled, and
+every subscriber's phone would delete them. `/healthz` counts the ranges that
+had to be carried (`unfetched_ranges`) and reports the account as `degraded`.
+
+If *every* slice fails, nothing is published at all: that is MOMook being down,
+not a schedule that emptied out, and republishing the carried-over copy would
+only reset the calendar's age and make a broken feed look healthy.
+
 Refreshes cost far more than they look: a single one is a series of queries
 holding a whole schedule window in memory. So they run **one at a time** on a
 single shared thread, in round-robin, `MOMOOK_REFRESH_GAP` seconds apart —
@@ -191,7 +215,8 @@ Every setting is an environment variable prefixed with `MOMOOK_`; see
 | `FEED_TOKEN` | — | secret path segment of the feed URL |
 | `PUBLIC_URL` | — | where this deployment answers, so the CLI can print a URL |
 | `TIMEZONE` | `Europe/Paris` | applied to timestamps returned without an offset |
-| `DAYS_PAST` / `DAYS_FUTURE` | 7 / 90 | feed window |
+| `DAYS_PAST` / `DAYS_FUTURE` | 7 / 365 | feed window; forward is a ceiling, not a promise |
+| `HORIZON_GAP_DAYS` | 60 | empty days that mean the schedule is over, and the fetch can stop |
 | `CHUNK_DAYS` | 21 | window is fetched in slices; MOMook 504s on wide queries |
 | `CACHE_TTL` | 1800 | seconds between two refreshes of the same account |
 | `REFRESH_GAP` | 15 | seconds of quiet between two accounts' refreshes |
@@ -217,6 +242,7 @@ python -m tests.test_model    # event mapping and ICS output, offline
 python -m tests.test_config   # account blocks, inheritance, token rules
 python -m tests.test_envfile  # writing the .env: quoting, numbering, removal
 python -m tests.test_client   # session recovery, MOMook stubbed
+python -m tests.test_feed     # horizon, unfetchable slices, MOMook stubbed
 python -m tests.test_app      # HTTP routes, MOMook stubbed
 ```
 
