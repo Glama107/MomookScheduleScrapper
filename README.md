@@ -30,6 +30,11 @@ Worth knowing:
   `{"status": "auth2fa"}`, the second replays the same payload with an
   `auth2fa` field. MOMook uses standard TOTP (SHA1 / 6 digits / 30 s).
 - Bad credentials return `422` with `["page.login.error.invalidCredentials"]`.
+- A session that has expired is a `422` with `{"message": "Not authorized"}` —
+  the same status as an ordinary validation error, so the body has to be read.
+  Every endpoint says so that way except `/api/system/user/identity`, which
+  answers `200` with every field `null`. An identity with nobody in it means
+  "sign in again", and is the one signal the status code will not give you.
 - Date filters are unix timestamps prefixed with a comparator: `:Start=<end`
   and `:End=>start`, i.e. the event overlaps the window.
 - The `Rel[]` relations are essential. Without them the response carries only

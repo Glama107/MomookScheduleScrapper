@@ -247,22 +247,38 @@ class MomookClient:
     # -- API surface -------------------------------------------------------
 
     def identity(self) -> dict:
-        """The signed-in user, as returned by ``/api/system/user/identity``."""
-        if self._identity is None:
-            data = self._get("/api/system/user/identity")
-            if not isinstance(data, dict):
-                raise MomookError(f"Unexpected identity payload: {type(data).__name__}")
+        """The signed-in user, as returned by ``/api/system/user/identity``.
+
+        Only an answer that has a user id in it is memoised. Asked without a live
+        session, this endpoint returns ``200`` with every field nulled out, and
+        remembering *that* is how a process ends up serving a stale calendar for
+        the rest of its life: the cache is only ever cleared by a login, and a
+        login is exactly what never happens next.
+        """
+        if self._identity is not None:
+            return self._identity
+        data = self._get("/api/system/user/identity")
+        if not isinstance(data, dict):
+            raise MomookError(f"Unexpected identity payload: {type(data).__name__}")
+        if _find_user_id(data) is not None:
             self._identity = data
-        return self._identity
+        return data
 
     def user_id(self) -> int:
         """The numeric user id used to filter schedule events."""
-        identity = self.identity()
-        user_id = _find_user_id(identity)
+        user_id = _find_user_id(self.identity())
+        if user_id is None:
+            # The one endpoint whose "your session is gone" `_is_session_lost`
+            # cannot see: 200, no error, the fields simply empty. An identity
+            # with nobody in it is that, and signing in again is the answer.
+            log.info("Identity came back empty; the session is gone. Re-authenticating")
+            self.login()
+            user_id = _find_user_id(self.identity())
         if user_id is None:
             raise MomookError(
-                "Could not locate a user id in the identity payload. "
-                "Run `momook-ics whoami` and share the output so the lookup can be fixed."
+                "Could not locate a user id in the identity payload, even after signing "
+                "in again. Run `momook-ics whoami` and share the output so the lookup "
+                "can be fixed."
             )
         return user_id
 
@@ -353,6 +369,10 @@ def _is_session_lost(response: httpx.Response) -> bool:
     one immediately — so a long-running feed hits this routinely. Recognising it
     is the difference between one re-login and a service that stays broken until
     it is restarted.
+
+    Not every endpoint admits it this plainly: ``/api/system/user/identity``
+    answers a dead session with a 200 and an empty user, which nothing here can
+    see. ``user_id`` reads that emptiness for what it is.
     """
     if response.status_code in (401, 403) or _is_login_redirect(response):
         return True

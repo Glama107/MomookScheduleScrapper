@@ -69,6 +69,59 @@ def test_an_expired_session_is_replaced_rather_than_reported() -> None:
     ], seen
 
 
+# What /api/system/user/identity answers when the session behind it is gone:
+# 200, no error, the whole user simply blank.
+EMPTY_IDENTITY = {"id": None, "uuid": None, "username": None, "title_full": None}
+
+IDENTITY = {"id": "20937", "username": "u"}
+
+
+def test_an_empty_identity_is_a_lost_session_too() -> None:
+    """The failure that froze the deployed feeds for two weeks. Every other
+    endpoint refuses a dead session with a 422; this one answers 200 with the
+    user nulled out, so nothing looked wrong — the refresh just could not find
+    a user id, and said so again every half hour until it was restarted."""
+    identities = [EMPTY_IDENTITY, IDENTITY]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/session"):
+            return httpx.Response(200, json={"status": "created"})
+        return httpx.Response(200, json=identities.pop(0))
+
+    client = build()
+    seen = stub(client, handler)
+
+    assert client.user_id() == 20937, client.user_id()
+    assert seen == [
+        "POST /api/system/auth/session",  # the first sign-in
+        "GET /api/system/user/identity",  # nobody home: the session is gone
+        "POST /api/system/auth/session",  # so sign in again
+        "GET /api/system/user/identity",  # and there we are
+    ], seen
+
+
+def test_an_empty_identity_is_never_remembered() -> None:
+    """And it must not be cached on the way past. Memoising the blank user is
+    what turned one expired session into a feed that stayed frozen: the cache
+    outlives the session, and only a login clears it."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/session"):
+            return httpx.Response(200, json={"status": "created"})
+        return httpx.Response(200, json=EMPTY_IDENTITY)
+
+    client = build()
+    stub(client, handler)
+
+    try:
+        client.user_id()
+    except MomookError as exc:
+        assert "even after signing in again" in str(exc), exc
+    else:
+        raise AssertionError("an identity with nobody in it must fail")
+
+    assert client._identity is None, client._identity
+
+
 def test_a_422_that_is_not_about_the_session_is_not_retried() -> None:
     """422 is also Momook's ordinary validation error. Re-authenticating over
     one would turn a bad request into a login loop."""
