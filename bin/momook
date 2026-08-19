@@ -47,8 +47,11 @@ run_cli() {
 }
 
 restart() {
-    echo "→ restarting so the service picks up the new roster"
-    docker compose up -d --force-recreate
+    # --build, because `restart` is also how a code change reaches the service:
+    # without it compose happily re-creates the container from the image it
+    # already has, and the deployment silently keeps running the old code.
+    echo "→ rebuilding and restarting"
+    docker compose up -d --build --force-recreate
     for _ in $(seq 1 30); do
         case "$(docker inspect -f '{{.State.Health.Status}}' "$SERVICE" 2>/dev/null || echo missing)" in
             healthy) echo "✓ running"; return 0 ;;
