@@ -11,6 +11,8 @@ refreshes them one after another.
 
 from __future__ import annotations
 
+import ctypes
+import gc
 import hmac
 import logging
 import threading
@@ -25,6 +27,25 @@ from .ical import build_calendar
 from .model import Event, event_id, parse_events
 
 log = logging.getLogger(__name__)
+
+try:
+    _libc_malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
+except OSError:
+    # musl or another non-glibc libc: nothing to trim, refreshes just cost more RSS.
+    _libc_malloc_trim = None
+
+
+def _release_freed_memory() -> None:
+    """Hand the heap pages a refresh just freed back to the OS.
+
+    Parsing a year of schedule JSON is the single biggest allocation spike in
+    this process's life, and glibc's malloc does not return that memory on its
+    own — it keeps the freed arena around for reuse, so RSS ratchets up to the
+    size of the worst refresh and stays there. malloc_trim(0) forces the give-back.
+    """
+    gc.collect()
+    if _libc_malloc_trim is not None:
+        _libc_malloc_trim(0)
 
 # Bounds on the adaptive slice splitting in _fetch_slice.
 MIN_SLICE_DAYS = 3
@@ -425,6 +446,8 @@ class FeedRegistry:
                 log.info("[%s] Calendar refreshed", builder.label)
             except Exception as exc:  # noqa: BLE001 - the loop must survive
                 log.warning("[%s] Background refresh failed: %s", builder.label, exc)
+            finally:
+                _release_freed_memory()
 
             due[index] = time.monotonic() + cycle
             if self._stop.wait(self._settings.refresh_gap):

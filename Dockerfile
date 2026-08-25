@@ -15,7 +15,12 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/venv/bin:$PATH" \
-    MOMOOK_PORT=8080
+    MOMOOK_PORT=8080 \
+    # glibc's malloc gives each thread its own arena (up to 8x the CPU count),
+    # which fragments the heap of a small multi-threaded service like this one.
+    # Capping it keeps allocations pooled instead of scattered across arenas
+    # that never fully empty.
+    MALLOC_ARENA_MAX=2
 
 # tzdata backs the ZoneInfo lookups used to build VTIMEZONE blocks.
 RUN apt-get update \
