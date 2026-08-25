@@ -20,7 +20,14 @@ ENV PYTHONUNBUFFERED=1 \
     # which fragments the heap of a small multi-threaded service like this one.
     # Capping it keeps allocations pooled instead of scattered across arenas
     # that never fully empty.
-    MALLOC_ARENA_MAX=2
+    MALLOC_ARENA_MAX=2 \
+    # CPython's own small-object allocator (pymalloc) keeps its arenas until
+    # they are completely empty, which glibc's malloc_trim can't see or force —
+    # so the long-lived objects each refresh leaves behind (cached calendars,
+    # parsed events) fragment the heap a little more every cycle. Routing
+    # everything straight to glibc lets the periodic malloc_trim() actually
+    # reclaim what a refresh's year-of-JSON parse frees.
+    PYTHONMALLOC=malloc
 
 # tzdata backs the ZoneInfo lookups used to build VTIMEZONE blocks.
 RUN apt-get update \
