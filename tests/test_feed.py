@@ -77,7 +77,7 @@ def test_the_walk_stops_at_the_schools_horizon() -> None:
     # so, and the rest of the year is never asked for.
     assert len(momook.asked) == 5, momook.asked
     assert harvest.gaps == [], harvest.gaps
-    assert len(harvest.rows) == 2, harvest.rows
+    assert len(harvest.items) == 2, harvest.items
 
 
 def test_a_year_that_is_full_is_walked_to_the_end() -> None:

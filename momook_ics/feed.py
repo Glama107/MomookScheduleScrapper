@@ -19,12 +19,13 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 from .client import MomookAuthError, MomookClient, MomookError, MomookOverloadError
 from .config import Account, Settings
 from .ical import build_calendar
-from .model import Event, event_id, parse_events
+from .model import Event, event_id, parse_event
 
 log = logging.getLogger(__name__)
 
@@ -63,12 +64,15 @@ STALE_AFTER_CYCLES = 3
 class Harvest:
     """One pass over the window: what came back, and what would not.
 
+    ``items`` is whatever the caller's ``keep`` made of each row — the raw row
+    itself for ``dump``, a parsed ``Event`` for the feed.
+
     ``gaps`` are the ranges Momook never managed to answer. They are the reason
     this is not just a list of rows: a refresh that lost a fortnight has to say
     so, or the calendar it renders reads as "those lessons were cancelled".
     """
 
-    rows: list[dict]
+    items: list
     gaps: list[tuple[datetime, datetime]]
     horizon: datetime
 
@@ -127,9 +131,13 @@ class FeedBuilder:
 
     def fetch_rows(self, window: tuple[datetime, datetime] | None = None) -> list[dict]:
         """Raw schedule rows for the whole window — what ``dump`` prints."""
-        return self.harvest(window).rows
+        return self.harvest(window, keep=_as_is).items
 
-    def harvest(self, window: tuple[datetime, datetime] | None = None) -> Harvest:
+    def harvest(
+        self,
+        window: tuple[datetime, datetime] | None = None,
+        keep: Callable[[dict], object] | None = None,
+    ) -> Harvest:
         """Walk the window in slices, and report what could not be walked.
 
         Momook's gateway returns 504 on a query spanning several months, so the
@@ -143,12 +151,20 @@ class FeedBuilder:
         after the halving in ``_fetch_slice`` has run out of room — becomes a
         gap rather than the end of the refresh, so one stubborn fortnight cannot
         cost the other eleven months.
+
+        Each row goes through ``keep`` — parsed into an ``Event`` unless told
+        otherwise, dropped when that yields None — as soon as its slice is in,
+        and the slice's JSON is let go before the next one is asked for. A row
+        comes back carrying two dozen expanded relations, and a year of them
+        held raw is by far the largest thing this process ever allocates.
         """
         start, end = window or self.window()
         user_id = self._client.user_id() if self._account.only_my_events else None
+        if keep is None:
+            keep = self._parse
 
-        by_id: dict[object, dict] = {}
-        anonymous: list[dict] = []
+        by_id: dict[object, object] = {}
+        anonymous: list = []
         gaps: list[tuple[datetime, datetime]] = []
         now = datetime.now(self._tz)
         attempted = 0
@@ -177,17 +193,24 @@ class FeedBuilder:
                 empty_run = 0
                 continue
 
+            answered = bool(rows)
             for row in rows:
                 if not isinstance(row, dict):
                     continue
+                item = keep(row)
+                if item is None:
+                    continue
                 key = event_id(row)
                 if key is None:
-                    anonymous.append(row)
+                    anonymous.append(item)
                 else:
-                    by_id[key] = row
+                    by_id[key] = item
+            # Let the slice go now: kept until the next fetch returns, two
+            # slices' worth of JSON would sit in memory at once.
+            del rows
 
             horizon = chunk_end
-            if rows or chunk_start < now:
+            if answered or chunk_start < now:
                 empty_run = 0
                 continue
 
@@ -220,7 +243,10 @@ class FeedBuilder:
             horizon.date(),
             f" ({len(gaps)} range(s) unfetched)" if gaps else "",
         )
-        return Harvest(rows=merged, gaps=gaps, horizon=horizon)
+        return Harvest(items=merged, gaps=gaps, horizon=horizon)
+
+    def _parse(self, row: dict) -> Event | None:
+        return parse_event(row, self._tz)
 
     def _fetch_slice(
         self, user_id: int, start: datetime, end: datetime, depth: int = 0
@@ -253,7 +279,8 @@ class FeedBuilder:
 
     def fetch_events(self) -> list[Event]:
         harvest = self.harvest()
-        events = self._carry_over(parse_events(harvest.rows, self._tz), harvest.gaps)
+        events = sorted(harvest.items, key=lambda event: event.start)
+        events = self._carry_over(events, harvest.gaps)
         with self._state_lock:
             self._known = events
             self._gaps = len(harvest.gaps)
@@ -452,6 +479,10 @@ class FeedRegistry:
             due[index] = time.monotonic() + cycle
             if self._stop.wait(self._settings.refresh_gap):
                 return
+
+
+def _as_is(row: dict) -> dict:
+    return row
 
 
 def _slices(start: datetime, end: datetime, days: int) -> list[tuple[datetime, datetime]]:

@@ -110,6 +110,11 @@ def main() -> None:
     assert ics.count("X-APPLE-DEFAULT-ALARM:TRUE") == 3
     assert "TRIGGER;VALUE=DATE-TIME:19760401T005545Z" in ics, _grep(ics, "TRIGGER")
     assert "DTSTART;TZID=Europe/Paris:20260914T083000" in ics, _grep(ics, "DTSTART")
+    # Events are serialised one by one and spliced in: still one calendar, and
+    # the zone they refer to is defined once, ahead of them.
+    assert ics.count("BEGIN:VCALENDAR") == 1 and ics.count("END:VCALENDAR") == 1
+    assert ics.count("BEGIN:VTIMEZONE") == 1 and "TZID:Europe/Paris" in ics, _grep(ics, "TZID")
+    assert ics.index("BEGIN:VTIMEZONE") < ics.index("BEGIN:VEVENT")
 
     # The parser must survive a payload it has never seen.
     junk = [{}, {"Id": 1}, {"Id": 2, "Start": "nonsense"}, {"Start": "2026-01-01 00:00:00"}]

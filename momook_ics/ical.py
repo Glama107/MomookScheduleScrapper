@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from icalendar import Alarm, Calendar, Event as VEvent
+from icalendar import Alarm, Calendar, Event as VEvent, Timezone
 
 from .model import Event
 
@@ -27,6 +27,9 @@ REFRESH_INTERVAL = "PT15M"
 _NO_ALARM_TRIGGER = datetime(1976, 4, 1, 0, 55, 45, tzinfo=timezone.utc)
 
 
+_END = b"END:VCALENDAR\r\n"
+
+
 def build_calendar(events: list[Event], *, name: str, timezone_name: str) -> bytes:
     cal = Calendar()
     cal.add("prodid", PRODID)
@@ -38,14 +41,38 @@ def build_calendar(events: list[Event], *, name: str, timezone_name: str) -> byt
     cal.add("x-published-ttl", REFRESH_INTERVAL)
     cal.add("refresh-interval;value=duration", REFRESH_INTERVAL)
 
+    # Each event is serialised as soon as it is built, rather than added to
+    # the calendar and serialised with it: icalendar's object tree weighs some
+    # twenty times the text it renders to, and a year of schedule held that
+    # way is what made a refresh's memory peak.
     now = datetime.now(timezone.utc)
+    tzids: set[str] = set()
+    body: list[bytes] = []
     for event in events:
-        cal.add_component(_to_vevent(event, now))
+        vevent = _to_vevent(event, now)
+        tzids.update(_tzids(vevent))
+        body.append(vevent.to_ical())
 
     # Emit VTIMEZONE blocks for every TZID referenced, so clients that do not
-    # carry an Olson database still place the events correctly.
-    cal.add_missing_timezones()
-    return cal.to_ical()
+    # carry an Olson database still place the events correctly. They come
+    # before the events, where add_missing_timezones() would have put them.
+    for tzid in sorted(tzids):
+        try:
+            cal.add_component(Timezone.from_tzid(tzid))
+        except ValueError:
+            continue  # a TZID the Olson database does not know: nothing to emit
+
+    head = cal.to_ical()
+    return head[: -len(_END)] + b"".join(body) + _END
+
+
+def _tzids(component: VEvent) -> set[str]:
+    """The TZIDs a component's properties refer to."""
+    return {
+        tzid
+        for _, value in component.property_items(sorted=False)
+        if (tzid := getattr(value, "params", {}).get("TZID"))
+    }
 
 
 def _to_vevent(event: Event, now: datetime) -> VEvent:
